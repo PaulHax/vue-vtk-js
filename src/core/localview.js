@@ -247,6 +247,12 @@ export class LocalView {
   }
 
   triggerRender() {
+    if (this.externalContextMode) {
+      const shaderCache = this.openglRenderWindow.getShaderCache();
+      if (shaderCache) {
+        shaderCache.setLastShaderProgramBound(null);
+      }
+    }
     if (this.renderer) {
       this.renderer.resetCameraClippingRange();
     }
@@ -732,6 +738,12 @@ export class ClientView {
   }
 
   triggerRender() {
+    if (this.externalContextMode) {
+      const shaderCache = this.openglRenderWindow.getShaderCache();
+      if (shaderCache) {
+        shaderCache.setLastShaderProgramBound(null);
+      }
+    }
     this.renderer.resetCameraClippingRange();
     this.renderWindow.render();
   }
