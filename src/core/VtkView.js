@@ -66,6 +66,10 @@ export default {
       type: Object,
       default: () => ({}),
     },
+    contextOptions: {
+      type: Object,
+      default: () => ({}),
+    },
   },
   emits: [
     "resize",
@@ -122,7 +126,8 @@ export default {
       props.pickingModes,
       props.interactorSettings,
       props.interactorEvents,
-      { emit, nextTick }
+      { emit, nextTick },
+      props.contextOptions
     );
     view.setCubeAxesVisibility(props.showCubeAxes);
     const { onEnter, onLeave, onKeyUp } = enableResetCamera(view);
@@ -163,6 +168,9 @@ export default {
     const setCubeAxesVisibility = (v) => {
       props.showCubeAxes = v;
     };
+    const saveGLState = () => view.saveGLState();
+    const restoreGLState = () => view.restoreGLState();
+    const resetGLState = () => view.resetGLState();
     return {
       vtkContainer,
       onEnter,
@@ -173,6 +181,9 @@ export default {
       getCamera,
       setCamera,
       setCubeAxesVisibility,
+      saveGLState,
+      restoreGLState,
+      resetGLState,
     };
   },
   template: `

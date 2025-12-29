@@ -107,7 +107,7 @@ class BusyHandler {
 }
 
 export class LocalView {
-  constructor(ctxName, pickingModes, getArray, events, vueCtx) {
+  constructor(ctxName, pickingModes, getArray, events, vueCtx, contextOptions = {}) {
     this.vueCtx = vueCtx;
     this.pickingModes = pickingModes;
     this.container = null;
@@ -129,6 +129,7 @@ export class LocalView {
     });
     this.openglRenderWindow = vtkOpenGLRenderWindow.newInstance({
       cursor: "default",
+      ...contextOptions,
     });
     this.renderWindow.addView(this.openglRenderWindow);
     this.interactor = vtkRenderWindowInteractor.newInstance();
@@ -448,6 +449,18 @@ export class LocalView {
     return [];
   }
 
+  saveGLState() {
+    this.openglRenderWindow.saveGLState?.();
+  }
+
+  restoreGLState() {
+    this.openglRenderWindow.restoreGLState?.();
+  }
+
+  resetGLState() {
+    this.openglRenderWindow.resetGLState?.();
+  }
+
   beforeDelete() {
     this.render.cancel();
 
@@ -504,7 +517,7 @@ export function enableResetCamera(view) {
 }
 
 export class ClientView {
-  constructor(background, pickingModes, interactorSettings, events, vueCtx) {
+  constructor(background, pickingModes, interactorSettings, events, vueCtx, contextOptions = {}) {
     this.vueCtx = vueCtx;
     this.pickingModes = pickingModes;
     this.renderWindow = vtkRenderWindow.newInstance();
@@ -516,6 +529,7 @@ export class ClientView {
 
     this.openglRenderWindow = vtkOpenGLRenderWindow.newInstance({
       cursor: "default",
+      ...contextOptions,
     });
     this.renderWindow.addView(this.openglRenderWindow);
 
@@ -812,6 +826,18 @@ export class ClientView {
       });
     }
     return [];
+  }
+
+  saveGLState() {
+    this.openglRenderWindow.saveGLState?.();
+  }
+
+  restoreGLState() {
+    this.openglRenderWindow.restoreGLState?.();
+  }
+
+  resetGLState() {
+    this.openglRenderWindow.resetGLState?.();
   }
 
   beforeDelete() {

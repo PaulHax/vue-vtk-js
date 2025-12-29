@@ -79,6 +79,10 @@ export default {
       type: Array,
       default: () => [],
     },
+    contextOptions: {
+      type: Object,
+      default: () => ({}),
+    },
   },
   emits: [
     "resetCamera",
@@ -162,7 +166,8 @@ export default {
       props.pickingModes,
       getArray,
       props.interactorEvents,
-      { emit, nextTick, ready }
+      { emit, nextTick, ready },
+      props.contextOptions
     );
     view.updateStyle(props.interactorSettings, onBoxSelectChange);
     const { onEnter, onLeave, onKeyUp } = enableResetCamera(view);
@@ -264,6 +269,9 @@ export default {
       view.setSynchronizedViewId(idChanged);
     };
     const resize = () => view.resize();
+    const saveGLState = () => view.saveGLState();
+    const restoreGLState = () => view.restoreGLState();
+    const resetGLState = () => view.resetGLState();
     const { onClick, onMouseMove } = view;
     return {
       vtkContainer,
@@ -277,6 +285,9 @@ export default {
       setSynchronizedViewId,
       resize,
       captureImage,
+      saveGLState,
+      restoreGLState,
+      resetGLState,
     };
   },
   template: `
