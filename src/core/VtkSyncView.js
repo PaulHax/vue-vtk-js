@@ -272,6 +272,11 @@ export default {
     const saveGLState = () => view.saveGLState();
     const restoreGLState = () => view.restoreGLState();
     const resetGLState = () => view.resetGLState();
+    const initializeWithExternalContext = (canvas, context, options) =>
+      view.initializeWithExternalContext(canvas, context, options);
+    const setSize = (width, height) => view.setSize(width, height);
+    const triggerRender = () => view.triggerRender();
+    const getOpenGLRenderWindow = () => view.openglRenderWindow;
     const { onClick, onMouseMove } = view;
     return {
       vtkContainer,
@@ -288,6 +293,10 @@ export default {
       saveGLState,
       restoreGLState,
       resetGLState,
+      initializeWithExternalContext,
+      setSize,
+      triggerRender,
+      getOpenGLRenderWindow,
     };
   },
   template: `
