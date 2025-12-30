@@ -219,6 +219,8 @@ export class LocalView {
       ...options,
     });
 
+    this.openglRenderWindow.syncSizeFromCanvas?.();
+
     this.renderWindow.addView(this.openglRenderWindow);
     this.interactor.setView(this.openglRenderWindow);
     this.externalContextMode = true;
@@ -246,12 +248,13 @@ export class LocalView {
     this.openglRenderWindow.setSize(width, height);
   }
 
+  prepareExternalRender(options = {}) {
+    this.openglRenderWindow.prepareExternalRender?.(options);
+  }
+
   triggerRender() {
     if (this.externalContextMode) {
-      const shaderCache = this.openglRenderWindow.getShaderCache();
-      if (shaderCache) {
-        shaderCache.setLastShaderProgramBound(null);
-      }
+      this.openglRenderWindow.prepareExternalRender?.();
     }
     if (this.renderer) {
       this.renderer.resetCameraClippingRange();
@@ -708,6 +711,8 @@ export class ClientView {
       ...options,
     });
 
+    this.openglRenderWindow.syncSizeFromCanvas?.();
+
     this.renderWindow.addView(this.openglRenderWindow);
     this.interactor.setView(this.openglRenderWindow);
     this.externalContextMode = true;
@@ -737,12 +742,13 @@ export class ClientView {
     this.openglRenderWindow.setSize(width, height);
   }
 
+  prepareExternalRender(options = {}) {
+    this.openglRenderWindow.prepareExternalRender?.(options);
+  }
+
   triggerRender() {
     if (this.externalContextMode) {
-      const shaderCache = this.openglRenderWindow.getShaderCache();
-      if (shaderCache) {
-        shaderCache.setLastShaderProgramBound(null);
-      }
+      this.openglRenderWindow.prepareExternalRender?.();
     }
     this.renderer.resetCameraClippingRange();
     this.renderWindow.render();

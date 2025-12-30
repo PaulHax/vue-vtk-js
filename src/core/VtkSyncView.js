@@ -272,6 +272,7 @@ export default {
     const saveGLState = () => view.saveGLState();
     const restoreGLState = () => view.restoreGLState();
     const resetGLState = () => view.resetGLState();
+    const prepareExternalRender = (options) => view.prepareExternalRender(options);
     const initializeWithExternalContext = (canvas, context, options) =>
       view.initializeWithExternalContext(canvas, context, options);
     const setSize = (width, height) => view.setSize(width, height);
@@ -293,6 +294,7 @@ export default {
       saveGLState,
       restoreGLState,
       resetGLState,
+      prepareExternalRender,
       initializeWithExternalContext,
       setSize,
       triggerRender,
