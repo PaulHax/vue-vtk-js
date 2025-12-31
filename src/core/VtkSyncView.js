@@ -278,6 +278,9 @@ export default {
     const setSize = (width, height) => view.setSize(width, height);
     const triggerRender = () => view.triggerRender();
     const getOpenGLRenderWindow = () => view.openglRenderWindow;
+    const getRenderWindow = () => view.renderWindow;
+    const setExternalRenderCallback = (callback) => view.setExternalRenderCallback(callback);
+    const renderNow = () => view.renderNow();
     const { onClick, onMouseMove } = view;
     return {
       vtkContainer,
@@ -299,6 +302,9 @@ export default {
       setSize,
       triggerRender,
       getOpenGLRenderWindow,
+      getRenderWindow,
+      setExternalRenderCallback,
+      renderNow,
     };
   },
   template: `

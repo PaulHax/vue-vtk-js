@@ -265,6 +265,20 @@ export class LocalView {
     this.renderWindow.render();
   }
 
+  setExternalRenderCallback(callback) {
+    this.renderWindow.setExternalRenderCallback(callback);
+  }
+
+  renderNow() {
+    if (this.externalContextMode) {
+      this.openglRenderWindow.prepareExternalRender?.();
+    }
+    if (this.renderer) {
+      this.renderer.resetCameraClippingRange();
+    }
+    this.renderWindow.renderNow();
+  }
+
   setSynchronizedViewId(newId) {
     // Remove renderers from previous remote view
     const renderers = this.renderWindow.getRenderersByReference();
@@ -758,6 +772,18 @@ export class ClientView {
     }
     this.renderer.resetCameraClippingRange();
     this.renderWindow.render();
+  }
+
+  setExternalRenderCallback(callback) {
+    this.renderWindow.setExternalRenderCallback(callback);
+  }
+
+  renderNow() {
+    if (this.externalContextMode) {
+      this.openglRenderWindow.prepareExternalRender?.();
+    }
+    this.renderer.resetCameraClippingRange();
+    this.renderWindow.renderNow();
   }
 
   resize() {
