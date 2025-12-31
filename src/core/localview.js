@@ -150,6 +150,9 @@ export class LocalView {
 
     // Create debounced methods
     this.render = debounce(() => {
+      if (this.externalContextMode) {
+        this.openglRenderWindow.prepareExternalRender?.();
+      }
       if (this.renderer) {
         this.renderer.resetCameraClippingRange();
       }
@@ -611,6 +614,9 @@ export class ClientView {
 
     // expose helper methods
     this.render = debounce(() => {
+      if (this.externalContextMode) {
+        this.openglRenderWindow.prepareExternalRender?.();
+      }
       this.renderer.resetCameraClippingRange();
       this.renderWindow.render();
     }, 1);
