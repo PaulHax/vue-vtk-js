@@ -15,9 +15,6 @@ export function withSharedContext(BaseView) {
     }
 
     renderShared(options = {}) {
-      if (this.renderer) {
-        this.renderer.resetCameraClippingRange();
-      }
       this.openglRenderWindow.renderShared(options);
     }
 
