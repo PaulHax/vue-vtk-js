@@ -10,6 +10,7 @@ import {
 } from "vue";
 
 import { LocalView, enableResetCamera } from "./localview";
+import { withSharedContext } from "./SharedContextMixin";
 
 export default {
   props: {
@@ -82,6 +83,10 @@ export default {
     contextOptions: {
       type: Object,
       default: () => ({}),
+    },
+    sharedContext: {
+      type: Boolean,
+      default: false,
     },
   },
   emits: [
@@ -160,8 +165,9 @@ export default {
       getArray = client.value.getRemote()?.SyncView?.getArray;
     }
 
-    // Create VTK stuff
-    const view = new LocalView(
+    // Create VTK stuff - use mixin for shared context support
+    const ViewClass = props.sharedContext ? withSharedContext(LocalView) : LocalView;
+    const view = new ViewClass(
       props.contextName,
       props.pickingModes,
       getArray,
@@ -269,18 +275,18 @@ export default {
       view.setSynchronizedViewId(idChanged);
     };
     const resize = () => view.resize();
-    const saveGLState = () => view.saveGLState();
-    const restoreGLState = () => view.restoreGLState();
-    const resetGLState = () => view.resetGLState();
-    const prepareExternalRender = (options) => view.prepareExternalRender(options);
-    const initializeWithExternalContext = (canvas, context, options) =>
-      view.initializeWithExternalContext(canvas, context, options);
     const setSize = (width, height) => view.setSize(width, height);
     const triggerRender = () => view.triggerRender();
     const getOpenGLRenderWindow = () => view.openglRenderWindow;
     const getRenderWindow = () => view.renderWindow;
-    const setExternalRenderCallback = (callback) => view.setExternalRenderCallback(callback);
     const renderNow = () => view.renderNow();
+
+    // Shared context methods (only available when sharedContext prop is true)
+    const initializeForSharedContext = (canvas, gl, options) =>
+      view.initializeForSharedContext?.(canvas, gl, options);
+    const renderShared = (options) => view.renderShared?.(options);
+    const onRenderRequested = (callback) => view.onRenderRequested?.(callback);
+
     const { onClick, onMouseMove } = view;
     return {
       vtkContainer,
@@ -294,17 +300,15 @@ export default {
       setSynchronizedViewId,
       resize,
       captureImage,
-      saveGLState,
-      restoreGLState,
-      resetGLState,
-      prepareExternalRender,
-      initializeWithExternalContext,
       setSize,
       triggerRender,
       getOpenGLRenderWindow,
       getRenderWindow,
-      setExternalRenderCallback,
       renderNow,
+      // Shared context methods
+      initializeForSharedContext,
+      renderShared,
+      onRenderRequested,
     };
   },
   template: `

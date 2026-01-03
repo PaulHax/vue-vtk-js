@@ -111,7 +111,6 @@ export class LocalView {
     this.vueCtx = vueCtx;
     this.pickingModes = pickingModes;
     this.container = null;
-    this.externalContextMode = false;
     this.rwId = 0;
     this.mtime = 0;
     this.busy = new BusyHandler(vueCtx.ready);
@@ -150,9 +149,6 @@ export class LocalView {
 
     // Create debounced methods
     this.render = debounce(() => {
-      if (this.externalContextMode) {
-        this.openglRenderWindow.prepareExternalRender?.();
-      }
       if (this.renderer) {
         this.renderer.resetCameraClippingRange();
       }
@@ -211,34 +207,7 @@ export class LocalView {
     this.onBoxSelectChange = select;
   }
 
-  initializeWithExternalContext(canvas, context, options = {}) {
-    this.renderWindow.removeView(this.openglRenderWindow);
-    this.openglRenderWindow.delete();
-
-    this.openglRenderWindow = vtkOpenGLRenderWindow.newInstance({
-      canvas,
-      context,
-      autoClear: false,
-      ...options,
-    });
-
-    this.openglRenderWindow.syncSizeFromCanvas?.();
-
-    this.renderWindow.addView(this.openglRenderWindow);
-    this.interactor.setView(this.openglRenderWindow);
-    this.externalContextMode = true;
-
-    this.selector.attach(this.openglRenderWindow, this.renderer);
-  }
-
   setContainer(container) {
-    if (this.externalContextMode) {
-      this.container = container;
-      if (container) {
-        this.interactor.bindEvents(container);
-      }
-      return;
-    }
     this.container = container;
     this.openglRenderWindow.setContainer(container);
     this.interactor.bindEvents(container);
@@ -251,28 +220,14 @@ export class LocalView {
     this.openglRenderWindow.setSize(width, height);
   }
 
-  prepareExternalRender(options = {}) {
-    this.openglRenderWindow.prepareExternalRender?.(options);
-  }
-
   triggerRender() {
-    if (this.externalContextMode) {
-      this.openglRenderWindow.prepareExternalRender?.();
-    }
     if (this.renderer) {
       this.renderer.resetCameraClippingRange();
     }
     this.renderWindow.render();
   }
 
-  setExternalRenderCallback(callback) {
-    this.renderWindow.setExternalRenderCallback(callback);
-  }
-
   renderNow() {
-    if (this.externalContextMode) {
-      this.openglRenderWindow.prepareExternalRender?.();
-    }
     if (this.renderer) {
       this.renderer.resetCameraClippingRange();
     }
@@ -345,9 +300,6 @@ export class LocalView {
   }
 
   resize() {
-    if (this.externalContextMode) {
-      return;
-    }
     if (this.container) {
       const devicePixelRatio = window.devicePixelRatio || 1;
       const { width, height } = this.container.getBoundingClientRect();
@@ -515,18 +467,6 @@ export class LocalView {
     return [];
   }
 
-  saveGLState() {
-    this.openglRenderWindow.saveGLState?.();
-  }
-
-  restoreGLState() {
-    this.openglRenderWindow.restoreGLState?.();
-  }
-
-  resetGLState() {
-    this.openglRenderWindow.resetGLState?.();
-  }
-
   beforeDelete() {
     this.render.cancel();
 
@@ -586,7 +526,6 @@ export class ClientView {
   constructor(background, pickingModes, interactorSettings, events, vueCtx, contextOptions = {}) {
     this.vueCtx = vueCtx;
     this.pickingModes = pickingModes;
-    this.externalContextMode = false;
     this.renderWindow = vtkRenderWindow.newInstance();
     this.renderer = vtkRenderer.newInstance({ background });
     this.renderWindow.addRenderer(this.renderer);
@@ -628,9 +567,6 @@ export class ClientView {
 
     // expose helper methods
     this.render = debounce(() => {
-      if (this.externalContextMode) {
-        this.openglRenderWindow.prepareExternalRender?.();
-      }
       this.renderer.resetCameraClippingRange();
       this.renderWindow.render();
     }, 1);
@@ -720,34 +656,7 @@ export class ClientView {
     this.updateStyle(interactorSettings);
   }
 
-  initializeWithExternalContext(canvas, context, options = {}) {
-    this.renderWindow.removeView(this.openglRenderWindow);
-    this.openglRenderWindow.delete();
-
-    this.openglRenderWindow = vtkOpenGLRenderWindow.newInstance({
-      canvas,
-      context,
-      autoClear: false,
-      ...options,
-    });
-
-    this.openglRenderWindow.syncSizeFromCanvas?.();
-
-    this.renderWindow.addView(this.openglRenderWindow);
-    this.interactor.setView(this.openglRenderWindow);
-    this.externalContextMode = true;
-
-    this.selector.attach(this.openglRenderWindow, this.renderer);
-  }
-
   setContainer(container) {
-    if (this.externalContextMode) {
-      this.container = container;
-      if (container) {
-        this.interactor.bindEvents(container);
-      }
-      return;
-    }
     this.container = container;
     this.openglRenderWindow.setContainer(container);
     this.interactor.bindEvents(container);
@@ -762,34 +671,17 @@ export class ClientView {
     this.openglRenderWindow.setSize(width, height);
   }
 
-  prepareExternalRender(options = {}) {
-    this.openglRenderWindow.prepareExternalRender?.(options);
-  }
-
   triggerRender() {
-    if (this.externalContextMode) {
-      this.openglRenderWindow.prepareExternalRender?.();
-    }
     this.renderer.resetCameraClippingRange();
     this.renderWindow.render();
   }
 
-  setExternalRenderCallback(callback) {
-    this.renderWindow.setExternalRenderCallback(callback);
-  }
-
   renderNow() {
-    if (this.externalContextMode) {
-      this.openglRenderWindow.prepareExternalRender?.();
-    }
     this.renderer.resetCameraClippingRange();
     this.renderWindow.renderNow();
   }
 
   resize() {
-    if (this.externalContextMode) {
-      return;
-    }
     if (this.container) {
       const devicePixelRatio = window.devicePixelRatio || 1;
       const { width, height } = this.container.getBoundingClientRect();
@@ -954,18 +846,6 @@ export class ClientView {
       });
     }
     return [];
-  }
-
-  saveGLState() {
-    this.openglRenderWindow.saveGLState?.();
-  }
-
-  restoreGLState() {
-    this.openglRenderWindow.restoreGLState?.();
-  }
-
-  resetGLState() {
-    this.openglRenderWindow.resetGLState?.();
   }
 
   beforeDelete() {
