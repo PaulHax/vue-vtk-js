@@ -3,6 +3,7 @@ import vtkSharedRenderWindow from "@kitware/vtk.js/Rendering/OpenGL/SharedRender
 export function withSharedContext(BaseView) {
   return class SharedContextView extends BaseView {
     initializeForSharedContext(canvas, gl, options = {}) {
+      this._sharedContext = true;
       this.renderWindow.removeView(this.openglRenderWindow);
       this.openglRenderWindow.delete();
       this.openglRenderWindow = vtkSharedRenderWindow.createFromContext(canvas, gl, options);
