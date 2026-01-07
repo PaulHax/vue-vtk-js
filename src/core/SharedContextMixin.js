@@ -15,7 +15,12 @@ export function withSharedContext(BaseView) {
     }
 
     renderShared(options = {}) {
+      // Force enableRender=true to ensure render happens even during scene updates
+      // (updateViewState sets enableRender=false which would skip the render)
+      const savedEnableRender = this.interactor.getEnableRender();
+      this.interactor.setEnableRender(true);
       this.openglRenderWindow.renderShared(options);
+      this.interactor.setEnableRender(savedEnableRender);
     }
 
     onRenderRequested(callback) {
