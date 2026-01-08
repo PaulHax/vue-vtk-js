@@ -114,8 +114,6 @@ export class LocalView {
     this.rwId = 0;
     this.mtime = 0;
     this.busy = new BusyHandler(vueCtx.ready);
-    this._updateInProgress = false;
-    this._pendingRemoteState = null;
     this.renderer = null;
     this.activeCamera = null;
     this.subscriptions = [];
@@ -247,14 +245,6 @@ export class LocalView {
   }
 
   async updateViewState(remoteState) {
-    if (this._sharedContext) {
-      if (this._updateInProgress) {
-        // Coalesce updates in shared-context mode to avoid lagging behind.
-        this._pendingRemoteState = remoteState;
-        return;
-      }
-      this._updateInProgress = true;
-    }
     // console.time('updateViewState');
     this.renderWindow.getInteractor().setEnableRender(false);
 
@@ -299,24 +289,13 @@ export class LocalView {
         }
       }
 
-      // In shared context, rely on the host render loop (e.g., MapLibre) to draw.
-      if (!this._sharedContext) {
-        this.vueCtx.nextTick(this.render);
-      }
+      this.vueCtx.nextTick(this.render);
       this.vueCtx.emit("viewStateChange", remoteState);
       this.busy.stop();
       this.vueCtx.emit("afterSceneLoaded");
 
       // console.timeEnd('updateViewState');
       this.renderWindow.getInteractor().setEnableRender(true);
-    }
-    if (this._sharedContext) {
-      this._updateInProgress = false;
-      if (this._pendingRemoteState) {
-        const pending = this._pendingRemoteState;
-        this._pendingRemoteState = null;
-        Promise.resolve().then(() => this.updateViewState(pending));
-      }
     }
   }
 
