@@ -1,26 +1,40 @@
 import vtkSharedRenderWindow from "@kitware/vtk.js/Rendering/OpenGL/SharedRenderWindow";
 
 function getSharedDebugEvents() {
-  if (typeof globalThis === "undefined") {
+  const root = typeof window !== "undefined" ? window : null;
+  if (!root || !root._vtkSharedDebugEnabled) {
     return null;
   }
-  if (!globalThis._vtkSharedDebugEnabled) {
-    return null;
+  if (!root._vtkSharedDebugEvents) {
+    root._vtkSharedDebugEvents = [];
   }
-  if (!globalThis._vtkSharedDebugEvents) {
-    globalThis._vtkSharedDebugEvents = [];
-  }
-  return globalThis._vtkSharedDebugEvents;
+  return root._vtkSharedDebugEvents;
 }
 
 export function withSharedContext(BaseView) {
   return class SharedContextView extends BaseView {
     initializeForSharedContext(canvas, gl, options = {}) {
       this._sharedContext = true;
+      // Render gating flag: true only while we are actively applying state.
+      // (Host render loops like MapLibre can safely render between batches.)
       this._sharedUpdateInProgress = false;
+      // Runner lock: prevents concurrent queue drainers.
+      this._sharedUpdateRunnerActive = false;
       this._sharedUpdateQueue = [];
-      const { batchSharedUpdates = false, ...contextOptions } = options || {};
+      this._sharedLastFrameId = null;
+      this._sharedLastSyncSeq = null;
+      const {
+        batchSharedUpdates = false,
+        // When an external render loop drives rendering (MapLibre, deck.gl, etc), it may
+        // call render while a remote-state synchronization is mid-flight. Rendering a
+        // partially-applied state can cause visible jitter (e.g., lines detaching from
+        // footprints). Default is to skip renders during updates and rely on the host
+        // to repaint after `afterSceneLoaded`.
+        allowRenderDuringUpdate = false,
+        ...contextOptions
+      } = options || {};
       this._sharedBatchUpdates = !!batchSharedUpdates;
+      this._sharedAllowRenderDuringUpdate = !!allowRenderDuringUpdate;
       this.renderWindow.removeView(this.openglRenderWindow);
       this.openglRenderWindow.delete();
       this.openglRenderWindow = vtkSharedRenderWindow.createFromContext(
@@ -44,7 +58,9 @@ export function withSharedContext(BaseView) {
       const pushDebug = debugEvents
         ? (event) => {
             const time =
-              typeof performance !== "undefined" ? performance.now() : Date.now();
+              typeof performance !== "undefined"
+                ? performance.now()
+                : Date.now();
             debugEvents.push({ t: time, ...event });
           }
         : null;
@@ -77,10 +93,11 @@ export function withSharedContext(BaseView) {
           frameId: remoteState?.extra?.mapFrameId,
         });
       }
-      if (this._sharedUpdateInProgress) {
+      if (this._sharedUpdateRunnerActive) {
         return;
       }
 
+      this._sharedUpdateRunnerActive = true;
       this._sharedUpdateInProgress = true;
       this.renderWindow.getInteractor().setEnableRender(false);
       this.busy.reset();
@@ -94,7 +111,17 @@ export function withSharedContext(BaseView) {
             ? requestAnimationFrame
             : (cb) => setTimeout(cb, 0);
         while (this._sharedUpdateQueue.length) {
-          const batchSize = batchUpdates ? this._sharedUpdateQueue.length : 1;
+          // In shared-context hosts (MapLibre/deck.gl), the host clears the
+          // framebuffer every frame. If we hold the update lock for too long,
+          // host renders will clear without VTK redraw, which presents as
+          // flicker or total disappearance at higher playback speeds.
+          //
+          // We bound batch size to ensure we yield and allow coherent renders
+          // between batches.
+          const maxBatchSize = 25;
+          const batchSize = batchUpdates
+            ? Math.min(this._sharedUpdateQueue.length, maxBatchSize)
+            : 1;
           if (batchUpdates) {
             this.vueCtx.emit("beforeSceneLoaded");
             if (pushDebug) {
@@ -131,7 +158,11 @@ export function withSharedContext(BaseView) {
                 [this.renderer] = this.renderWindow.getRenderersByReference();
                 this.activeCamera = this.renderer.getActiveCamera();
               }
-              if (nextState.extra && nextState.extra.camera && this.activeCamera) {
+              if (
+                nextState.extra &&
+                nextState.extra.camera &&
+                this.activeCamera
+              ) {
                 this.ctx.registerInstance(
                   nextState.extra.camera,
                   this.activeCamera
@@ -142,7 +173,9 @@ export function withSharedContext(BaseView) {
             const success = await progress;
             if (success && nextState.extra) {
               if (nextState.extra.camera) {
-                this.remoteCamera = this.ctx.getInstance(nextState.extra.camera);
+                this.remoteCamera = this.ctx.getInstance(
+                  nextState.extra.camera
+                );
                 if (this.remoteCamera) {
                   this.style.setCenterOfRotation(
                     this.remoteCamera.getFocalPoint()
@@ -151,7 +184,9 @@ export function withSharedContext(BaseView) {
               }
 
               if (nextState.extra.centerOfRotation) {
-                this.style.setCenterOfRotation(nextState.extra.centerOfRotation);
+                this.style.setCenterOfRotation(
+                  nextState.extra.centerOfRotation
+                );
               }
 
               if (nextState.extra.resetCamera) {
@@ -161,6 +196,8 @@ export function withSharedContext(BaseView) {
 
             if (success) {
               lastSuccessfulState = nextState;
+              this._sharedLastSyncSeq = nextState?.extra?.mapSyncSeq ?? null;
+              this._sharedLastFrameId = nextState?.extra?.mapFrameId ?? null;
             }
 
             if (success && !batchUpdates) {
@@ -190,18 +227,60 @@ export function withSharedContext(BaseView) {
               });
             }
           }
-          if (batchUpdates && this._sharedUpdateQueue.length) {
+
+          // Allow host to render the coherent committed state at least once
+          // between update batches.
+          this._sharedUpdateInProgress = false;
+          this.renderWindow.getInteractor().setEnableRender(true);
+
+          if (this._sharedUpdateQueue.length) {
             await new Promise((resolve) => raf(resolve));
+            this._sharedUpdateInProgress = true;
+            this.renderWindow.getInteractor().setEnableRender(false);
           }
         }
       } finally {
         this.busy.stop();
         this.renderWindow.getInteractor().setEnableRender(true);
         this._sharedUpdateInProgress = false;
+        this._sharedUpdateRunnerActive = false;
       }
     }
 
     renderShared(options = {}) {
+      const debugEvents = getSharedDebugEvents();
+      const pushDebug = debugEvents
+        ? (event) => {
+            const time =
+              typeof performance !== "undefined"
+                ? performance.now()
+                : Date.now();
+            debugEvents.push({ t: time, ...event });
+          }
+        : null;
+      if (
+        this._sharedContext &&
+        this._sharedUpdateInProgress &&
+        !this._sharedAllowRenderDuringUpdate
+      ) {
+        if (pushDebug) {
+          pushDebug({
+            type: "renderShared",
+            action: "skipped_update_in_progress",
+            seq: this._sharedLastSyncSeq,
+            frameId: this._sharedLastFrameId,
+          });
+        }
+        return;
+      }
+      if (pushDebug) {
+        pushDebug({
+          type: "renderShared",
+          action: "render",
+          seq: this._sharedLastSyncSeq,
+          frameId: this._sharedLastFrameId,
+        });
+      }
       // Force enableRender=true to ensure render happens even during scene updates
       // (updateViewState sets enableRender=false which would skip the render)
       const savedEnableRender = this.interactor.getEnableRender();
