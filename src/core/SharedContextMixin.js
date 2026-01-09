@@ -12,6 +12,36 @@ function getSharedDebugEvents() {
   return root._vtkSharedDebugEvents;
 }
 
+// Flicker tracking - always enabled for diagnostics
+function trackRender(type, overlayValid, hasTexture, updateInProgress) {
+  const root = typeof window !== "undefined" ? window : null;
+  if (!root) return;
+  if (!root._vtkFlickerStats) {
+    root._vtkFlickerStats = {
+      flickerCount: 0,
+      compositeCount: 0,
+      freshRenderCount: 0,
+      renderDuringSyncCount: 0,
+      lastFlickerTime: null,
+    };
+  }
+  const stats = root._vtkFlickerStats;
+  if (type === "flicker") {
+    stats.flickerCount += 1;
+    stats.lastFlickerTime = Date.now();
+    console.warn(
+      `[VTK-FLICKER] Flicker! overlayValid=${overlayValid} hasTexture=${hasTexture} total=${stats.flickerCount}`
+    );
+  } else if (type === "composite") {
+    stats.compositeCount += 1;
+  } else if (type === "fresh") {
+    stats.freshRenderCount += 1;
+  }
+  if (updateInProgress) {
+    stats.renderDuringSyncCount += 1;
+  }
+}
+
 export function withSharedContext(BaseView) {
   return class SharedContextView extends BaseView {
     _ensureSharedOverlayResources() {
@@ -266,6 +296,12 @@ export function withSharedContext(BaseView) {
         return;
       }
 
+      // Note: We previously had pre-sync overlay rendering here to prevent flicker,
+      // but it caused clipping issues because the projection matrix wasn't set up
+      // correctly outside of MapLibre's render loop. The flicker fix now relies on:
+      // 1. Event emission reordering (afterSceneLoaded after _sharedUpdateInProgress=false)
+      // 2. Error handling in renderShared to ensure tracking works
+
       this._sharedUpdateRunnerActive = true;
       this._sharedUpdateInProgress = true;
       this.renderWindow.getInteractor().setEnableRender(false);
@@ -382,6 +418,14 @@ export function withSharedContext(BaseView) {
               }
             }
           }
+          // Allow host to render the coherent committed state at least once
+          // between update batches.
+          this._sharedUpdateInProgress = false;
+          this.renderWindow.getInteractor().setEnableRender(true);
+
+          // Emit events AFTER _sharedUpdateInProgress = false so camera + geometry
+          // are both ready when the first render happens (prevents jitter in
+          // MapLibre shared context where camera is applied in afterSceneLoaded)
           if (batchUpdates) {
             if (lastSuccessfulState) {
               this.vueCtx.emit("viewStateChange", lastSuccessfulState);
@@ -396,11 +440,6 @@ export function withSharedContext(BaseView) {
               });
             }
           }
-
-          // Allow host to render the coherent committed state at least once
-          // between update batches.
-          this._sharedUpdateInProgress = false;
-          this.renderWindow.getInteractor().setEnableRender(true);
 
           if (this._sharedUpdateQueue.length) {
             await new Promise((resolve) => raf(resolve));
@@ -417,77 +456,59 @@ export function withSharedContext(BaseView) {
     }
 
     renderShared(options = {}) {
-      const debugEvents = getSharedDebugEvents();
-      const pushDebug = debugEvents
-        ? (event) => {
-            const time =
-              typeof performance !== "undefined"
-                ? performance.now()
-                : Date.now();
-            debugEvents.push({ t: time, ...event });
-          }
-        : null;
+      const updateInProgress = !!this._sharedUpdateInProgress;
 
-      if (this._sharedContext) {
-        // Always try to composite the last complete overlay to avoid flicker
-        // when the host clears the framebuffer every frame.
-        this._ensureSharedOverlayResources();
-
-        if (
-          this._sharedUpdateInProgress &&
-          !this._sharedAllowRenderDuringUpdate
-        ) {
-          if (pushDebug) {
-            pushDebug({
-              type: "renderShared",
-              action: "composite_only_update_in_progress",
-              seq: this._sharedLastSyncSeq,
-              frameId: this._sharedLastFrameId,
-            });
-          }
+      // During sync, composite cached overlay to prevent flicker
+      if (updateInProgress) {
+        if (this._sharedOverlayValid && this._sharedOverlayTexture) {
+          trackRender("composite", true, true, true);
           this._compositeSharedOverlay();
           return;
         }
-      }
-
-      if (pushDebug) {
-        pushDebug({
-          type: "renderShared",
-          action: "render",
-          seq: this._sharedLastSyncSeq,
-          frameId: this._sharedLastFrameId,
-        });
-      }
-
-      // Force enableRender=true to ensure render happens even during scene updates
-      // (updateViewState sets enableRender=false which would skip the render)
-      const savedEnableRender = this.interactor.getEnableRender();
-      this.interactor.setEnableRender(true);
-
-      if (
-        this._sharedContext &&
-        this._sharedOverlayFramebuffer &&
-        this._sharedOverlayTexture &&
-        this.openglRenderWindow?.getContext?.()
-      ) {
-        const gl = this.openglRenderWindow.getContext();
-        try {
-          this._sharedOverlayFramebuffer.bind();
-          gl.clearColor(0, 0, 0, 0);
-          gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-          this.openglRenderWindow.renderShared(options);
-          this._sharedOverlayValid = true;
-        } finally {
-          // Ensure we return to default framebuffer for compositing.
-          gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-          this.openglRenderWindow.setActiveFramebuffer?.(null);
-        }
-        this._compositeSharedOverlay();
+        // No valid overlay - this will flicker but we have no choice
+        trackRender("flicker", false, !!this._sharedOverlayTexture, true);
       } else {
-        this.openglRenderWindow.renderShared(options);
+        trackRender("fresh", this._sharedOverlayValid, !!this._sharedOverlayTexture, false);
       }
 
-      this.interactor.setEnableRender(savedEnableRender);
+      // Get WebGL context and disable depth clipping for VTK overlay
+      const gl = this.openglRenderWindow?.getContext?.();
+      if (gl) {
+        gl.disable(gl.DEPTH_TEST);
+        gl.depthMask(false);
+      }
+
+      // Render VTK scene
+      this.openglRenderWindow.renderShared(options);
+
+      // Cache result to overlay framebuffer for use during next sync
+      if (!updateInProgress && gl) {
+        try {
+          if (this._ensureSharedOverlayResources()) {
+            const fb = this._sharedOverlayFramebuffer;
+            if (fb) {
+              // Copy current framebuffer to overlay texture
+              fb.bind();
+              gl.clearColor(0, 0, 0, 0);
+              gl.clear(gl.COLOR_BUFFER_BIT);
+
+              // Re-render to the overlay framebuffer
+              this.openglRenderWindow.renderShared(options);
+
+              this._sharedOverlayValid = true;
+              gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+            }
+          }
+        } catch (e) {
+          // Overlay caching failed - not critical
+        }
+      }
+
+      // Restore depth state for MapLibre
+      if (gl) {
+        gl.enable(gl.DEPTH_TEST);
+        gl.depthMask(true);
+      }
     }
 
     onRenderRequested(callback) {
