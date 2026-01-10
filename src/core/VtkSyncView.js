@@ -286,6 +286,7 @@ export default {
       view.initializeForSharedContext?.(canvas, gl, options);
     const renderShared = (options) => view.renderShared?.(options);
     const onRenderRequested = (callback) => view.onRenderRequested?.(callback);
+    const setRepaintCallback = (callback) => view.setRepaintCallback?.(callback);
 
     const { onClick, onMouseMove } = view;
     return {
@@ -309,6 +310,7 @@ export default {
       initializeForSharedContext,
       renderShared,
       onRenderRequested,
+      setRepaintCallback,
     };
   },
   template: `

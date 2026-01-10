@@ -1,5 +1,7 @@
 import vtkSharedRenderWindow from "@kitware/vtk.js/Rendering/OpenGL/SharedRenderWindow";
 import vtkOpenGLFramebuffer from "@kitware/vtk.js/Rendering/OpenGL/Framebuffer";
+import vtkRenderer from "@kitware/vtk.js/Rendering/Core/Renderer";
+import vtkActor from "@kitware/vtk.js/Rendering/Core/Actor";
 
 function getSharedDebugEvents() {
   const root = typeof window !== "undefined" ? window : null;
@@ -222,6 +224,23 @@ export function withSharedContext(BaseView) {
       this._sharedOverlayAttribUV = -1;
       this._sharedOverlayUniformTex = null;
 
+      // Ping-pong double buffer (alternative to copy-pixels)
+      this._pingPongFBOs = [null, null];
+      this._pingPongTextures = [null, null];
+      this._pingPongDepthBuffers = [null, null];
+      this._pingPongFront = 0; // Index of front buffer (0 or 1)
+      this._pingPongSize = null;
+      this._pingPongValid = false;
+
+      // Dual renderer approach - shadow renderer for flicker-free rendering
+      this._shadowRenderer = null;
+      this._shadowActors = new Map(); // Maps original actor to shadow actor
+      this._shadowValid = false;
+
+      // Sync-at-render mode (deck.gl style): queue state, apply at render time
+      this._syncStateAtRender = false;
+      this._requestRepaintCallback = null;
+
       const {
         batchSharedUpdates = false,
         // When an external render loop drives rendering (MapLibre, deck.gl, etc), it may
@@ -230,10 +249,15 @@ export function withSharedContext(BaseView) {
         // footprints). Default is to skip renders during updates and rely on the host
         // to repaint after `afterSceneLoaded`.
         allowRenderDuringUpdate = false,
+        // Deck.gl-style sync: queue state when it arrives, apply synchronously at render.
+        // Eliminates flicker by making state application atomic with rendering.
+        // Requires host to call triggerRepaint when state arrives.
+        syncStateAtRender = false,
         ...contextOptions
       } = options || {};
       this._sharedBatchUpdates = !!batchSharedUpdates;
       this._sharedAllowRenderDuringUpdate = !!allowRenderDuringUpdate;
+      this._syncStateAtRender = !!syncStateAtRender;
       this.renderWindow.removeView(this.openglRenderWindow);
       this.openglRenderWindow.delete();
       this.openglRenderWindow = vtkSharedRenderWindow.createFromContext(
@@ -247,6 +271,10 @@ export function withSharedContext(BaseView) {
       if (this.selector) {
         this.selector.attach(this.openglRenderWindow, this.renderer);
       }
+    }
+
+    setRepaintCallback(callback) {
+      this._requestRepaintCallback = callback;
     }
 
     async updateViewState(remoteState) {
@@ -292,6 +320,15 @@ export function withSharedContext(BaseView) {
           frameId: remoteState?.extra?.mapFrameId,
         });
       }
+
+      // Sync-at-render mode (deck.gl style): just queue state, apply at render time
+      if (this._syncStateAtRender) {
+        if (this._requestRepaintCallback) {
+          this._requestRepaintCallback();
+        }
+        return;
+      }
+
       if (this._sharedUpdateRunnerActive) {
         return;
       }
@@ -423,6 +460,11 @@ export function withSharedContext(BaseView) {
           this._sharedUpdateInProgress = false;
           this.renderWindow.getInteractor().setEnableRender(true);
 
+          // Sync shadow actors for dual renderer approach (flicker prevention)
+          // This copies current actor state to shadow renderer for next sync
+          this._ensureShadowRenderer();
+          this._syncShadowActors();
+
           // Emit events AFTER _sharedUpdateInProgress = false so camera + geometry
           // are both ready when the first render happens (prevents jitter in
           // MapLibre shared context where camera is applied in afterSceneLoaded)
@@ -528,16 +570,379 @@ export function withSharedContext(BaseView) {
       return true;
     }
 
-    renderShared(options = {}) {
-      const updateInProgress = !!this._sharedUpdateInProgress;
-      const gl = this.openglRenderWindow?.getContext?.();
+    _ensurePingPongFBOs(gl, width, height) {
+      const sizeChanged =
+        !this._pingPongSize ||
+        this._pingPongSize[0] !== width ||
+        this._pingPongSize[1] !== height;
 
-      // APPROACH 2: Copy pixels to texture
-      // During sync, composite the last captured frame
+      if (!sizeChanged && this._pingPongFBOs[0] && this._pingPongFBOs[1]) {
+        return true;
+      }
+
+      // Clean up old resources
+      for (let i = 0; i < 2; i++) {
+        if (this._pingPongFBOs[i]) {
+          gl.deleteFramebuffer(this._pingPongFBOs[i]);
+        }
+        if (this._pingPongTextures[i]) {
+          gl.deleteTexture(this._pingPongTextures[i]);
+        }
+        if (this._pingPongDepthBuffers[i]) {
+          gl.deleteRenderbuffer(this._pingPongDepthBuffers[i]);
+        }
+      }
+
+      // Create two FBOs with color textures and depth buffers
+      for (let i = 0; i < 2; i++) {
+        const tex = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, tex);
+        gl.texImage2D(
+          gl.TEXTURE_2D,
+          0,
+          gl.RGBA,
+          width,
+          height,
+          0,
+          gl.RGBA,
+          gl.UNSIGNED_BYTE,
+          null
+        );
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+        // Create depth renderbuffer
+        const depthBuffer = gl.createRenderbuffer();
+        gl.bindRenderbuffer(gl.RENDERBUFFER, depthBuffer);
+        gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT16, width, height);
+
+        const fbo = gl.createFramebuffer();
+        gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+        gl.framebufferTexture2D(
+          gl.FRAMEBUFFER,
+          gl.COLOR_ATTACHMENT0,
+          gl.TEXTURE_2D,
+          tex,
+          0
+        );
+        gl.framebufferRenderbuffer(
+          gl.FRAMEBUFFER,
+          gl.DEPTH_ATTACHMENT,
+          gl.RENDERBUFFER,
+          depthBuffer
+        );
+
+        // Check FBO is complete
+        const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+        if (status !== gl.FRAMEBUFFER_COMPLETE) {
+          console.warn(`[VTK] Ping-pong FBO ${i} incomplete: ${status}`);
+          gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+          return false;
+        }
+
+        this._pingPongFBOs[i] = fbo;
+        this._pingPongTextures[i] = tex;
+        this._pingPongDepthBuffers[i] = depthBuffer;
+      }
+
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      this._pingPongSize = [width, height];
+      this._pingPongValid = false;
+      this._pingPongFront = 0;
+
+      return true;
+    }
+
+    _compositePingPongFront(gl) {
+      if (!this._pingPongValid) {
+        return false;
+      }
+
+      const frontTex = this._pingPongTextures[this._pingPongFront];
+      if (!frontTex) {
+        return false;
+      }
+
+      if (!this._sharedOverlayProgram || !this._sharedOverlayBuffer) {
+        this._ensureSharedOverlayResources();
+        if (!this._sharedOverlayProgram) return false;
+      }
+
+      gl.useProgram(this._sharedOverlayProgram);
+      gl.bindBuffer(gl.ARRAY_BUFFER, this._sharedOverlayBuffer);
+
+      const stride = 4 * 4;
+      gl.enableVertexAttribArray(this._sharedOverlayAttribPos);
+      gl.vertexAttribPointer(this._sharedOverlayAttribPos, 2, gl.FLOAT, false, stride, 0);
+      gl.enableVertexAttribArray(this._sharedOverlayAttribUV);
+      gl.vertexAttribPointer(this._sharedOverlayAttribUV, 2, gl.FLOAT, false, stride, 2 * 4);
+
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, frontTex);
+      gl.uniform1i(this._sharedOverlayUniformTex, 0);
+
+      gl.disable(gl.DEPTH_TEST);
+      gl.depthMask(false);
+      gl.enable(gl.BLEND);
+      gl.blendEquation(gl.FUNC_ADD);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+      this.openglRenderWindow.restoreSharedState?.();
+      return true;
+    }
+
+    // APPROACH 4: Dual renderer with shadow actors
+    _ensureShadowRenderer() {
+      if (this._shadowRenderer) {
+        return true;
+      }
+
+      if (!this.renderWindow || !this.renderer) {
+        return false;
+      }
+
+      // Create shadow renderer on layer 1 (behind main renderer on layer 0)
+      this._shadowRenderer = vtkRenderer.newInstance();
+      this._shadowRenderer.setLayer(1);
+      this._shadowRenderer.setInteractive(false);
+      this._shadowRenderer.setDraw(false); // Start hidden
+
+      // Copy background from main renderer
+      this._shadowRenderer.setBackground(this.renderer.getBackground());
+
+      this.renderWindow.addRenderer(this._shadowRenderer);
+      return true;
+    }
+
+    _syncShadowActors() {
+      if (!this._shadowRenderer || !this.renderer) {
+        return;
+      }
+
+      // Ensure map exists
+      if (!this._shadowActors) {
+        this._shadowActors = new Map();
+      }
+
+      const mainActors = this.renderer.getActors();
+
+      // Remove shadow actors that no longer have a main actor
+      for (const [mainActor, shadowActor] of this._shadowActors) {
+        if (!mainActors.includes(mainActor)) {
+          this._shadowRenderer.removeActor(shadowActor);
+          shadowActor.delete?.();
+          this._shadowActors.delete(mainActor);
+        }
+      }
+
+      // For each main actor, ensure shadow exists and copy state
+      for (const mainActor of mainActors) {
+        let shadowActor = this._shadowActors.get(mainActor);
+
+        if (!shadowActor) {
+          // Clone the actor
+          shadowActor = this._cloneActor(mainActor);
+          if (shadowActor) {
+            this._shadowActors.set(mainActor, shadowActor);
+            this._shadowRenderer.addActor(shadowActor);
+          }
+        }
+
+        if (shadowActor) {
+          // Copy current state from main to shadow
+          this._copyActorState(mainActor, shadowActor);
+        }
+      }
+
+      // Copy camera state
+      const mainCamera = this.renderer.getActiveCamera();
+      const shadowCamera = this._shadowRenderer.getActiveCamera();
+      if (mainCamera && shadowCamera) {
+        shadowCamera.setPosition(...mainCamera.getPosition());
+        shadowCamera.setFocalPoint(...mainCamera.getFocalPoint());
+        shadowCamera.setViewUp(...mainCamera.getViewUp());
+        shadowCamera.setClippingRange(...mainCamera.getClippingRange());
+        if (mainCamera.getParallelProjection) {
+          shadowCamera.setParallelProjection(mainCamera.getParallelProjection());
+          shadowCamera.setParallelScale(mainCamera.getParallelScale());
+        }
+      }
+
+      this._shadowValid = true;
+    }
+
+    _cloneActor(actor) {
+      // Simple shallow clone - create new actor with same mapper
+      if (!actor) {
+        return null;
+      }
+
+      const clone = vtkActor.newInstance();
+
+      // Share the mapper (geometry data)
+      const mapper = actor.getMapper?.();
+      if (mapper) {
+        clone.setMapper(mapper);
+      }
+
+      // Copy properties
+      this._copyActorState(actor, clone);
+
+      return clone;
+    }
+
+    _copyActorState(src, dst) {
+      if (!src || !dst) return;
+
+      // Copy transform
+      if (src.getUserMatrix && dst.setUserMatrix) {
+        const matrix = src.getUserMatrix();
+        if (matrix) {
+          dst.setUserMatrix(matrix);
+        }
+      }
+
+      // Copy visibility
+      if (src.getVisibility && dst.setVisibility) {
+        dst.setVisibility(src.getVisibility());
+      }
+
+      // Copy property (color, opacity, etc)
+      const srcProp = src.getProperty?.();
+      const dstProp = dst.getProperty?.();
+      if (srcProp && dstProp) {
+        if (srcProp.getColor && dstProp.setColor) {
+          dstProp.setColor(...srcProp.getColor());
+        }
+        if (srcProp.getOpacity && dstProp.setOpacity) {
+          dstProp.setOpacity(srcProp.getOpacity());
+        }
+      }
+    }
+
+    _renderShadowRenderer() {
+      if (!this._shadowRenderer || !this._shadowValid) {
+        return false;
+      }
+
+      // Temporarily swap renderers: hide main, show shadow
+      const mainDraw = this.renderer?.getDraw?.() ?? true;
+      this.renderer?.setDraw?.(false);
+      this._shadowRenderer.setDraw(true);
+
+      // Render
+      this.openglRenderWindow.renderShared({});
+
+      // Restore
+      this._shadowRenderer.setDraw(false);
+      this.renderer?.setDraw?.(mainDraw);
+
+      return true;
+    }
+
+    _applyQueuedStateSynchronously() {
+      if (!this._sharedUpdateQueue?.length) {
+        return false;
+      }
+
+      const debugEvents = getSharedDebugEvents();
+      const pushDebug = debugEvents
+        ? (event) => {
+            const time =
+              typeof performance !== "undefined"
+                ? performance.now()
+                : Date.now();
+            debugEvents.push({ t: time, ...event });
+          }
+        : null;
+
+      this.vueCtx.emit("beforeSceneLoaded");
+      if (pushDebug) {
+        pushDebug({
+          type: "beforeSceneLoaded",
+          syncAtRender: true,
+          queueLength: this._sharedUpdateQueue.length,
+        });
+      }
+
+      let lastSuccessfulState = null;
+
+      while (this._sharedUpdateQueue.length) {
+        const nextState = this._sharedUpdateQueue.shift();
+
+        this.mtime = Math.max(this.mtime, nextState.mtime) + 1;
+        nextState.mtime = this.mtime;
+
+        const progress = this.renderWindow.synchronize(nextState);
+
+        if (progress) {
+          if (this.renderWindow.getRenderersByReference().length) {
+            [this.renderer] = this.renderWindow.getRenderersByReference();
+            this.activeCamera = this.renderer.getActiveCamera();
+          }
+          if (nextState.extra?.camera && this.activeCamera) {
+            this.ctx.registerInstance(nextState.extra.camera, this.activeCamera);
+          }
+        }
+
+        if (progress) {
+          lastSuccessfulState = nextState;
+          this._sharedLastSyncSeq = nextState?.extra?.mapSyncSeq ?? null;
+          this._sharedLastFrameId = nextState?.extra?.mapFrameId ?? null;
+
+          if (nextState.extra) {
+            if (nextState.extra.camera) {
+              this.remoteCamera = this.ctx.getInstance(nextState.extra.camera);
+              if (this.remoteCamera) {
+                this.style.setCenterOfRotation(this.remoteCamera.getFocalPoint());
+              }
+            }
+            if (nextState.extra.centerOfRotation) {
+              this.style.setCenterOfRotation(nextState.extra.centerOfRotation);
+            }
+            if (nextState.extra.resetCamera) {
+              this.resetCamera();
+            }
+          }
+        }
+      }
+
+      if (lastSuccessfulState) {
+        this.vueCtx.emit("viewStateChange", lastSuccessfulState);
+      }
+      this.vueCtx.emit("afterSceneLoaded");
+      if (pushDebug) {
+        pushDebug({
+          type: "afterSceneLoaded",
+          syncAtRender: true,
+          seq: lastSuccessfulState?.extra?.mapSyncSeq,
+          frameId: lastSuccessfulState?.extra?.mapFrameId,
+        });
+      }
+
+      return !!lastSuccessfulState;
+    }
+
+    renderShared(options = {}) {
+      // Sync-at-render mode (deck.gl style): apply all queued state first, then render
+      if (this._syncStateAtRender) {
+        this._applyQueuedStateSynchronously();
+        trackRender("fresh", false, false, false);
+        this.openglRenderWindow.renderShared(options);
+        return;
+      }
+
+      // Legacy mode: async state sync with copy-pixels flicker prevention
+      const updateInProgress = !!this._sharedUpdateInProgress;
+
       if (updateInProgress) {
-        if (gl && this._copyTextureValid) {
+        const gl = this.openglRenderWindow?.getContext?.();
+        if (gl && this._compositeCopyTexture(gl)) {
           trackRender("composite", true, true, true);
-          this._compositeCopyTexture(gl);
           return;
         }
         trackRender("flicker", false, false, true);
@@ -545,24 +950,18 @@ export function withSharedContext(BaseView) {
       }
 
       trackRender("fresh", false, false, false);
-
-      // Render VTK to screen
       this.openglRenderWindow.renderShared(options);
 
-      // Copy rendered pixels to texture for use during next sync
+      const gl = this.openglRenderWindow?.getContext?.();
       if (gl) {
-        try {
-          const width = gl.drawingBufferWidth;
-          const height = gl.drawingBufferHeight;
-          if (width > 0 && height > 0) {
-            this._ensureCopyTexture(gl, width, height);
-            gl.bindTexture(gl.TEXTURE_2D, this._copyTexture);
-            gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, width, height);
-            this._copyTextureValid = true;
-          }
-        } catch (e) {
-          // Copy failed - not critical
-        }
+        const canvas = gl.canvas;
+        const width = canvas.width;
+        const height = canvas.height;
+        this._ensureCopyTexture(gl, width, height);
+        gl.bindTexture(gl.TEXTURE_2D, this._copyTexture);
+        gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, width, height);
+        this._copyTextureValid = true;
+        this.openglRenderWindow.restoreSharedState?.();
       }
     }
 
