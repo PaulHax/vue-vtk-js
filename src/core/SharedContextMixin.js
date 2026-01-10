@@ -455,59 +455,114 @@ export function withSharedContext(BaseView) {
       }
     }
 
+    _ensureCopyTexture(gl, width, height) {
+      if (
+        this._copyTexture &&
+        this._copyTextureSize?.[0] === width &&
+        this._copyTextureSize?.[1] === height
+      ) {
+        return this._copyTexture;
+      }
+
+      if (this._copyTexture) {
+        gl.deleteTexture(this._copyTexture);
+      }
+
+      const tex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.texImage2D(
+        gl.TEXTURE_2D,
+        0,
+        gl.RGBA,
+        width,
+        height,
+        0,
+        gl.RGBA,
+        gl.UNSIGNED_BYTE,
+        null
+      );
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+      this._copyTexture = tex;
+      this._copyTextureSize = [width, height];
+      this._copyTextureValid = false;
+
+      return tex;
+    }
+
+    _compositeCopyTexture(gl) {
+      if (!this._copyTextureValid || !this._copyTexture) {
+        return false;
+      }
+
+      if (!this._sharedOverlayProgram || !this._sharedOverlayBuffer) {
+        this._ensureSharedOverlayResources();
+        if (!this._sharedOverlayProgram) return false;
+      }
+
+      gl.useProgram(this._sharedOverlayProgram);
+      gl.bindBuffer(gl.ARRAY_BUFFER, this._sharedOverlayBuffer);
+
+      const stride = 4 * 4;
+      gl.enableVertexAttribArray(this._sharedOverlayAttribPos);
+      gl.vertexAttribPointer(this._sharedOverlayAttribPos, 2, gl.FLOAT, false, stride, 0);
+      gl.enableVertexAttribArray(this._sharedOverlayAttribUV);
+      gl.vertexAttribPointer(this._sharedOverlayAttribUV, 2, gl.FLOAT, false, stride, 2 * 4);
+
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, this._copyTexture);
+      gl.uniform1i(this._sharedOverlayUniformTex, 0);
+
+      gl.disable(gl.DEPTH_TEST);
+      gl.depthMask(false);
+      gl.enable(gl.BLEND);
+      gl.blendEquation(gl.FUNC_ADD);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+      this.openglRenderWindow.restoreSharedState?.();
+      return true;
+    }
+
     renderShared(options = {}) {
       const updateInProgress = !!this._sharedUpdateInProgress;
+      const gl = this.openglRenderWindow?.getContext?.();
 
-      // During sync, composite cached overlay to prevent flicker
+      // APPROACH 2: Copy pixels to texture
+      // During sync, composite the last captured frame
       if (updateInProgress) {
-        if (this._sharedOverlayValid && this._sharedOverlayTexture) {
+        if (gl && this._copyTextureValid) {
           trackRender("composite", true, true, true);
-          this._compositeSharedOverlay();
+          this._compositeCopyTexture(gl);
           return;
         }
-        // No valid overlay - this will flicker but we have no choice
-        trackRender("flicker", false, !!this._sharedOverlayTexture, true);
-      } else {
-        trackRender("fresh", this._sharedOverlayValid, !!this._sharedOverlayTexture, false);
+        trackRender("flicker", false, false, true);
+        return;
       }
 
-      // Get WebGL context and disable depth clipping for VTK overlay
-      const gl = this.openglRenderWindow?.getContext?.();
-      if (gl) {
-        gl.disable(gl.DEPTH_TEST);
-        gl.depthMask(false);
-      }
+      trackRender("fresh", false, false, false);
 
-      // Render VTK scene
+      // Render VTK to screen
       this.openglRenderWindow.renderShared(options);
 
-      // Cache result to overlay framebuffer for use during next sync
-      if (!updateInProgress && gl) {
+      // Copy rendered pixels to texture for use during next sync
+      if (gl) {
         try {
-          if (this._ensureSharedOverlayResources()) {
-            const fb = this._sharedOverlayFramebuffer;
-            if (fb) {
-              // Copy current framebuffer to overlay texture
-              fb.bind();
-              gl.clearColor(0, 0, 0, 0);
-              gl.clear(gl.COLOR_BUFFER_BIT);
-
-              // Re-render to the overlay framebuffer
-              this.openglRenderWindow.renderShared(options);
-
-              this._sharedOverlayValid = true;
-              gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-            }
+          const width = gl.drawingBufferWidth;
+          const height = gl.drawingBufferHeight;
+          if (width > 0 && height > 0) {
+            this._ensureCopyTexture(gl, width, height);
+            gl.bindTexture(gl.TEXTURE_2D, this._copyTexture);
+            gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, width, height);
+            this._copyTextureValid = true;
           }
         } catch (e) {
-          // Overlay caching failed - not critical
+          // Copy failed - not critical
         }
-      }
-
-      // Restore depth state for MapLibre
-      if (gl) {
-        gl.enable(gl.DEPTH_TEST);
-        gl.depthMask(true);
       }
     }
 
