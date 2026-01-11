@@ -277,6 +277,69 @@ export function withSharedContext(BaseView) {
       this._requestRepaintCallback = callback;
     }
 
+    /**
+     * Synchronously apply state - for use in MapLibre/deck.gl render callbacks.
+     * Requires state to have inline array data (base64-encoded content fields).
+     * @param {Object} state - State with inline array data
+     * @param {boolean} skipRender - If true, skip the final render call
+     * @returns {boolean} - true if state was applied
+     */
+    synchronizeSync(state, skipRender = false) {
+      if (!this.renderWindow.hasInlineData(state)) {
+        console.warn(
+          "synchronizeSync: state missing inline data, falling back to async"
+        );
+        this.updateViewState(state);
+        return false;
+      }
+
+      this.vueCtx.emit("beforeSceneLoaded");
+
+      this.mtime = Math.max(this.mtime, state.mtime || 0) + 1;
+      state.mtime = this.mtime;
+
+      const success = this.renderWindow.synchronizeSync(state, skipRender);
+
+      if (success) {
+        if (this.renderWindow.getRenderersByReference().length) {
+          [this.renderer] = this.renderWindow.getRenderersByReference();
+          this.activeCamera = this.renderer.getActiveCamera();
+        }
+        if (state.extra?.camera && this.activeCamera) {
+          this.ctx.registerInstance(state.extra.camera, this.activeCamera);
+        }
+        if (state.extra) {
+          if (state.extra.camera) {
+            this.remoteCamera = this.ctx.getInstance(state.extra.camera);
+            if (this.remoteCamera) {
+              this.style.setCenterOfRotation(this.remoteCamera.getFocalPoint());
+            }
+          }
+          if (state.extra.centerOfRotation) {
+            this.style.setCenterOfRotation(state.extra.centerOfRotation);
+          }
+          if (state.extra.resetCamera) {
+            this.resetCamera();
+          }
+        }
+
+        this._sharedLastSyncSeq = state?.extra?.mapSyncSeq ?? null;
+        this._sharedLastFrameId = state?.extra?.mapFrameId ?? null;
+
+        this.vueCtx.emit("viewStateChange", state);
+      }
+
+      this.vueCtx.emit("afterSceneLoaded");
+      return success;
+    }
+
+    /**
+     * Check if state has all inline array data required for synchronizeSync
+     */
+    hasInlineData(state) {
+      return this.renderWindow.hasInlineData(state);
+    }
+
     async updateViewState(remoteState) {
       if (!this._sharedUpdateQueue) {
         this._sharedUpdateQueue = [];
@@ -550,9 +613,23 @@ export function withSharedContext(BaseView) {
 
       const stride = 4 * 4;
       gl.enableVertexAttribArray(this._sharedOverlayAttribPos);
-      gl.vertexAttribPointer(this._sharedOverlayAttribPos, 2, gl.FLOAT, false, stride, 0);
+      gl.vertexAttribPointer(
+        this._sharedOverlayAttribPos,
+        2,
+        gl.FLOAT,
+        false,
+        stride,
+        0
+      );
       gl.enableVertexAttribArray(this._sharedOverlayAttribUV);
-      gl.vertexAttribPointer(this._sharedOverlayAttribUV, 2, gl.FLOAT, false, stride, 2 * 4);
+      gl.vertexAttribPointer(
+        this._sharedOverlayAttribUV,
+        2,
+        gl.FLOAT,
+        false,
+        stride,
+        2 * 4
+      );
 
       gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, this._copyTexture);
@@ -616,7 +693,12 @@ export function withSharedContext(BaseView) {
         // Create depth renderbuffer
         const depthBuffer = gl.createRenderbuffer();
         gl.bindRenderbuffer(gl.RENDERBUFFER, depthBuffer);
-        gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT16, width, height);
+        gl.renderbufferStorage(
+          gl.RENDERBUFFER,
+          gl.DEPTH_COMPONENT16,
+          width,
+          height
+        );
 
         const fbo = gl.createFramebuffer();
         gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
@@ -675,9 +757,23 @@ export function withSharedContext(BaseView) {
 
       const stride = 4 * 4;
       gl.enableVertexAttribArray(this._sharedOverlayAttribPos);
-      gl.vertexAttribPointer(this._sharedOverlayAttribPos, 2, gl.FLOAT, false, stride, 0);
+      gl.vertexAttribPointer(
+        this._sharedOverlayAttribPos,
+        2,
+        gl.FLOAT,
+        false,
+        stride,
+        0
+      );
       gl.enableVertexAttribArray(this._sharedOverlayAttribUV);
-      gl.vertexAttribPointer(this._sharedOverlayAttribUV, 2, gl.FLOAT, false, stride, 2 * 4);
+      gl.vertexAttribPointer(
+        this._sharedOverlayAttribUV,
+        2,
+        gl.FLOAT,
+        false,
+        stride,
+        2 * 4
+      );
 
       gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, frontTex);
@@ -767,7 +863,9 @@ export function withSharedContext(BaseView) {
         shadowCamera.setViewUp(...mainCamera.getViewUp());
         shadowCamera.setClippingRange(...mainCamera.getClippingRange());
         if (mainCamera.getParallelProjection) {
-          shadowCamera.setParallelProjection(mainCamera.getParallelProjection());
+          shadowCamera.setParallelProjection(
+            mainCamera.getParallelProjection()
+          );
           shadowCamera.setParallelScale(mainCamera.getParallelScale());
         }
       }
@@ -877,19 +975,27 @@ export function withSharedContext(BaseView) {
         this.mtime = Math.max(this.mtime, nextState.mtime) + 1;
         nextState.mtime = this.mtime;
 
-        const progress = this.renderWindow.synchronize(nextState);
+        // Use synchronous path if inline data is available
+        let success = false;
+        if (this.renderWindow.hasInlineData(nextState)) {
+          success = this.renderWindow.synchronizeSync(nextState, true);
+        } else {
+          const progress = this.renderWindow.synchronize(nextState);
+          success = !!progress;
+        }
 
-        if (progress) {
+        if (success) {
           if (this.renderWindow.getRenderersByReference().length) {
             [this.renderer] = this.renderWindow.getRenderersByReference();
             this.activeCamera = this.renderer.getActiveCamera();
           }
           if (nextState.extra?.camera && this.activeCamera) {
-            this.ctx.registerInstance(nextState.extra.camera, this.activeCamera);
+            this.ctx.registerInstance(
+              nextState.extra.camera,
+              this.activeCamera
+            );
           }
-        }
 
-        if (progress) {
           lastSuccessfulState = nextState;
           this._sharedLastSyncSeq = nextState?.extra?.mapSyncSeq ?? null;
           this._sharedLastFrameId = nextState?.extra?.mapFrameId ?? null;
@@ -898,7 +1004,9 @@ export function withSharedContext(BaseView) {
             if (nextState.extra.camera) {
               this.remoteCamera = this.ctx.getInstance(nextState.extra.camera);
               if (this.remoteCamera) {
-                this.style.setCenterOfRotation(this.remoteCamera.getFocalPoint());
+                this.style.setCenterOfRotation(
+                  this.remoteCamera.getFocalPoint()
+                );
               }
             }
             if (nextState.extra.centerOfRotation) {

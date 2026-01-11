@@ -244,6 +244,45 @@ export class LocalView {
     this.rwId = newId;
   }
 
+  /**
+   * Synchronously apply state - for use in external render loops.
+   * Requires all arrays to have inline data (inline_arrays=True on Python side).
+   *
+   * @param {Object} state - State with inline array data
+   * @param {boolean} skipRender - If true, skip the render call
+   * @returns {boolean} - true if state was applied
+   */
+  synchronizeSync(state, skipRender = false) {
+    if (!this.renderWindow.hasInlineData(state)) {
+      console.warn(
+        "synchronizeSync: state missing inline data, falling back to async"
+      );
+      this.updateViewState(state);
+      return false;
+    }
+
+    const success = this.renderWindow.synchronizeSync(state, skipRender);
+    if (success) {
+      // Bind camera/renderer if available
+      if (this.renderWindow.getRenderersByReference().length) {
+        [this.renderer] = this.renderWindow.getRenderersByReference();
+        this.activeCamera = this.renderer.getActiveCamera();
+      }
+      if (state.extra && state.extra.camera && this.activeCamera) {
+        this.ctx.registerInstance(state.extra.camera, this.activeCamera);
+      }
+      this.vueCtx.emit("viewStateChange", state);
+    }
+    return success;
+  }
+
+  /**
+   * Check if state has all inline data required for synchronizeSync
+   */
+  hasInlineData(state) {
+    return this.renderWindow.hasInlineData(state);
+  }
+
   async updateViewState(remoteState) {
     // console.time('updateViewState');
     this.renderWindow.getInteractor().setEnableRender(false);
