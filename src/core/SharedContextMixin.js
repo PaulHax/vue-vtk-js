@@ -1036,11 +1036,15 @@ export function withSharedContext(BaseView) {
     }
 
     renderShared(options = {}) {
+      const { skipRender = false, ...renderOptions } = options;
+
       // Sync-at-render mode (deck.gl style): apply all queued state first, then render
       if (this._syncStateAtRender) {
         this._applyQueuedStateSynchronously();
-        trackRender("fresh", false, false, false);
-        this.openglRenderWindow.renderShared(options);
+        if (!skipRender) {
+          trackRender("fresh", false, false, false);
+          this.openglRenderWindow.renderShared(renderOptions);
+        }
         return;
       }
 
