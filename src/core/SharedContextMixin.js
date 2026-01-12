@@ -1,5 +1,6 @@
 import vtkSharedRenderWindow from "@kitware/vtk.js/Rendering/OpenGL/SharedRenderWindow";
 import vtkSharedSynchronizableRenderWindow from "@kitware/vtk.js/Rendering/Misc/SharedSynchronizableRenderWindow";
+import vtkObjectManager from "@kitware/vtk.js/Rendering/Misc/SynchronizableRenderWindow/ObjectManager";
 import vtkOpenGLFramebuffer from "@kitware/vtk.js/Rendering/OpenGL/Framebuffer";
 import vtkRenderer from "@kitware/vtk.js/Rendering/Core/Renderer";
 import vtkActor from "@kitware/vtk.js/Rendering/Core/Actor";
@@ -299,7 +300,8 @@ export function withSharedContext(BaseView) {
         vtkSharedSynchronizableRenderWindow.updateRenderWindowSync(
           this.renderWindow,
           state,
-          context
+          context,
+          vtkObjectManager
         );
 
         if (!skipRender) {
