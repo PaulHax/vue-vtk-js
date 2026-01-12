@@ -1,6 +1,8 @@
 import { debounce } from "@kitware/vtk.js/macro";
 
 import vtkSynchronizableRenderWindow from "@kitware/vtk.js/Rendering/Misc/SynchronizableRenderWindow";
+import vtkObjectManager from "@kitware/vtk.js/Rendering/Misc/SynchronizableRenderWindow/ObjectManager";
+import { withSyncCapability } from "@kitware/vtk.js/Rendering/Misc/SynchronizableRenderWindow/SyncExtension";
 import vtkOpenGLRenderWindow from "@kitware/vtk.js/Rendering/OpenGL/RenderWindow";
 import vtkRenderWindow from "@kitware/vtk.js/Rendering/Core/RenderWindow";
 import vtkRenderWindowInteractor from "@kitware/vtk.js/Rendering/Core/RenderWindowInteractor";
@@ -127,6 +129,12 @@ export class LocalView {
     this.renderWindow = vtkSynchronizableRenderWindow.newInstance({
       synchronizerContext: this.ctx,
     });
+    // Initialize sync capability (opt-in feature from SyncExtension)
+    this.syncCapability = withSyncCapability(
+      this.renderWindow,
+      this.ctx,
+      vtkObjectManager
+    );
     this.openglRenderWindow = vtkOpenGLRenderWindow.newInstance({
       cursor: "default",
       ...contextOptions,
@@ -253,7 +261,7 @@ export class LocalView {
    * @returns {boolean} - true if state was applied
    */
   synchronizeSync(state, skipRender = false) {
-    if (!this.renderWindow.hasInlineData(state)) {
+    if (!this.syncCapability.hasInlineData(state)) {
       console.warn(
         "synchronizeSync: state missing inline data, falling back to async"
       );
@@ -261,7 +269,7 @@ export class LocalView {
       return false;
     }
 
-    const success = this.renderWindow.synchronizeSync(state, skipRender);
+    const success = this.syncCapability.synchronizeSync(state, skipRender);
     if (success) {
       // Bind camera/renderer if available
       if (this.renderWindow.getRenderersByReference().length) {
@@ -280,7 +288,7 @@ export class LocalView {
    * Check if state has all inline data required for synchronizeSync
    */
   hasInlineData(state) {
-    return this.renderWindow.hasInlineData(state);
+    return this.syncCapability.hasInlineData(state);
   }
 
   async updateViewState(remoteState) {
