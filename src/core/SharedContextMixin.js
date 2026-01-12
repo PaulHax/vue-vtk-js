@@ -1,4 +1,5 @@
 import vtkSharedRenderWindow from "@kitware/vtk.js/Rendering/OpenGL/SharedRenderWindow";
+import vtkSharedSynchronizableRenderWindow from "@kitware/vtk.js/Rendering/Misc/SharedSynchronizableRenderWindow";
 import vtkOpenGLFramebuffer from "@kitware/vtk.js/Rendering/OpenGL/Framebuffer";
 import vtkRenderer from "@kitware/vtk.js/Rendering/Core/Renderer";
 import vtkActor from "@kitware/vtk.js/Rendering/Core/Actor";
@@ -203,7 +204,9 @@ export function withSharedContext(BaseView) {
     }
 
     initializeForSharedContext(canvas, gl, options = {}) {
-      this._sharedContext = true;
+      try {
+        console.log('[SharedContext] Starting initialization');
+        this._sharedContext = true;
       // Render gating flag: true only while we are actively applying state.
       // (Host render loops like MapLibre can safely render between batches.)
       this._sharedUpdateInProgress = false;
@@ -258,6 +261,8 @@ export function withSharedContext(BaseView) {
       this._sharedBatchUpdates = !!batchSharedUpdates;
       this._sharedAllowRenderDuringUpdate = !!allowRenderDuringUpdate;
       this._syncStateAtRender = !!syncStateAtRender;
+
+      // Replace openglRenderWindow with SharedRenderWindow
       this.renderWindow.removeView(this.openglRenderWindow);
       this.openglRenderWindow.delete();
       this.openglRenderWindow = vtkSharedRenderWindow.createFromContext(
@@ -270,6 +275,41 @@ export function withSharedContext(BaseView) {
 
       if (this.selector) {
         this.selector.attach(this.openglRenderWindow, this.renderer);
+      }
+        console.log('[SharedContext] Initialization complete');
+      } catch (e) {
+        console.error('[SharedContext] Initialization error:', e, e?.message, e?.stack);
+        throw e;
+      }
+    }
+
+    // Utility methods that use the imported functions
+    hasInlineData(state) {
+      return vtkSharedSynchronizableRenderWindow.allArraysHaveInlineData(state);
+    }
+
+    _synchronizeStateSync(state, skipRender = false) {
+      try {
+        const context = this.ctx;
+        if (!context) {
+          console.error('[SharedContext] _synchronizeStateSync: context is undefined');
+          return false;
+        }
+
+        vtkSharedSynchronizableRenderWindow.updateRenderWindowSync(
+          this.renderWindow,
+          state,
+          context
+        );
+
+        if (!skipRender) {
+          this.renderWindow.render();
+        }
+
+        return true;
+      } catch (e) {
+        console.error('[SharedContext] _synchronizeStateSync error:', e, e?.message, e?.stack);
+        throw e;
       }
     }
 
@@ -285,7 +325,7 @@ export function withSharedContext(BaseView) {
      * @returns {boolean} - true if state was applied
      */
     synchronizeSync(state, skipRender = false) {
-      if (!this.renderWindow.hasInlineData(state)) {
+      if (!this.hasInlineData(state)) {
         console.warn(
           "synchronizeSync: state missing inline data, falling back to async"
         );
@@ -298,7 +338,7 @@ export function withSharedContext(BaseView) {
       this.mtime = Math.max(this.mtime, state.mtime || 0) + 1;
       state.mtime = this.mtime;
 
-      const success = this.renderWindow.synchronizeSync(state, skipRender);
+      const success = this._synchronizeStateSync(state, skipRender);
 
       if (success) {
         if (this.renderWindow.getRenderersByReference().length) {
@@ -331,13 +371,6 @@ export function withSharedContext(BaseView) {
 
       this.vueCtx.emit("afterSceneLoaded");
       return success;
-    }
-
-    /**
-     * Check if state has all inline array data required for synchronizeSync
-     */
-    hasInlineData(state) {
-      return this.renderWindow.hasInlineData(state);
     }
 
     async updateViewState(remoteState) {
@@ -977,8 +1010,8 @@ export function withSharedContext(BaseView) {
 
         // Use synchronous path if inline data is available
         let success = false;
-        if (this.renderWindow.hasInlineData(nextState)) {
-          success = this.renderWindow.synchronizeSync(nextState, true);
+        if (this.hasInlineData(nextState)) {
+          success = this._synchronizeStateSync(nextState, true);
         } else {
           const progress = this.renderWindow.synchronize(nextState);
           success = !!progress;
