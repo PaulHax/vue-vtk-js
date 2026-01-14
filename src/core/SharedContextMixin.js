@@ -19,14 +19,12 @@ export function withSharedContext(BaseView) {
       this._requestRepaintCallback = null;
 
       const {
-        batchSharedUpdates = false,
         // Deck.gl-style sync: queue state when it arrives, apply synchronously at render.
         // Eliminates flicker by making state application atomic with rendering.
         // Requires host to call triggerRepaint when state arrives.
         syncStateAtRender = false,
         ...contextOptions
       } = options || {};
-      this._sharedBatchUpdates = !!batchSharedUpdates;
       this._syncStateAtRender = !!syncStateAtRender;
 
       // Replace openglRenderWindow with SharedRenderWindow
@@ -84,71 +82,9 @@ export function withSharedContext(BaseView) {
       this._requestRepaintCallback = callback;
     }
 
-    /**
-     * Synchronously apply state - for use in MapLibre/deck.gl render callbacks.
-     * Requires state to have inline array data (base64-encoded content fields).
-     * @param {Object} state - State with inline array data
-     * @param {boolean} skipRender - If true, skip the final render call
-     * @returns {boolean} - true if state was applied
-     */
-    synchronizeSync(state, skipRender = false) {
-      if (!this.hasInlineData(state)) {
-        console.warn(
-          "synchronizeSync: state missing inline data, falling back to async"
-        );
-        this.updateViewState(state);
-        return false;
-      }
-
-      this.vueCtx.emit("beforeSceneLoaded");
-
-      this.mtime = Math.max(this.mtime, state.mtime || 0) + 1;
-      state.mtime = this.mtime;
-
-      const success = this._synchronizeStateSync(state, skipRender);
-
-      if (success) {
-        if (this.renderWindow.getRenderersByReference().length) {
-          [this.renderer] = this.renderWindow.getRenderersByReference();
-          this.activeCamera = this.renderer.getActiveCamera();
-        }
-        if (state.extra?.camera && this.activeCamera) {
-          this.ctx.registerInstance(state.extra.camera, this.activeCamera);
-        }
-        if (state.extra) {
-          if (state.extra.camera) {
-            this.remoteCamera = this.ctx.getInstance(state.extra.camera);
-            if (this.remoteCamera) {
-              this.style.setCenterOfRotation(this.remoteCamera.getFocalPoint());
-            }
-          }
-          if (state.extra.centerOfRotation) {
-            this.style.setCenterOfRotation(state.extra.centerOfRotation);
-          }
-          if (state.extra.resetCamera) {
-            this.resetCamera();
-          }
-        }
-
-        this.vueCtx.emit("viewStateChange", state);
-      }
-
-      this.vueCtx.emit("afterSceneLoaded");
-      return success;
-    }
-
     async updateViewState(remoteState) {
       if (!this._sharedUpdateQueue) {
         this._sharedUpdateQueue = [];
-      }
-      if (
-        this._sharedBatchUpdates &&
-        remoteState?.extra?.mapFrameId != null &&
-        this._sharedUpdateQueue.length
-      ) {
-        this._sharedUpdateQueue = this._sharedUpdateQueue.filter(
-          (state) => state?.extra?.mapFrameId == null
-        );
       }
       this._sharedUpdateQueue.push(remoteState);
 
@@ -169,8 +105,6 @@ export function withSharedContext(BaseView) {
       this.renderWindow.getInteractor().setEnableRender(false);
       this.busy.reset();
       this.busy.start();
-      const batchUpdates = !!this._sharedBatchUpdates;
-      let lastSuccessfulState = null;
 
       try {
         const raf =
@@ -178,97 +112,63 @@ export function withSharedContext(BaseView) {
             ? requestAnimationFrame
             : (cb) => setTimeout(cb, 0);
         while (this._sharedUpdateQueue.length) {
-          // In shared-context hosts (MapLibre/deck.gl), the host clears the
-          // framebuffer every frame. If we hold the update lock for too long,
-          // host renders will clear without VTK redraw, which presents as
-          // flicker or total disappearance at higher playback speeds.
-          //
-          // We bound batch size to ensure we yield and allow coherent renders
-          // between batches.
-          const maxBatchSize = 25;
-          const batchSize = batchUpdates
-            ? Math.min(this._sharedUpdateQueue.length, maxBatchSize)
-            : 1;
-          if (batchUpdates) {
-            this.vueCtx.emit("beforeSceneLoaded");
-          }
-          lastSuccessfulState = null;
-          for (let batchIndex = 0; batchIndex < batchSize; batchIndex += 1) {
-            const nextState = this._sharedUpdateQueue.shift();
+          const nextState = this._sharedUpdateQueue.shift();
 
-            if (!batchUpdates) {
-              this.vueCtx.emit("beforeSceneLoaded");
+          this.vueCtx.emit("beforeSceneLoaded");
+
+          // Force to process provided state
+          this.mtime = Math.max(this.mtime, nextState.mtime) + 1;
+          nextState.mtime = this.mtime;
+          const progress = this.renderWindow.synchronize(nextState);
+
+          // Bind camera as soon as possible
+          if (progress) {
+            if (this.renderWindow.getRenderersByReference().length) {
+              [this.renderer] = this.renderWindow.getRenderersByReference();
+              this.activeCamera = this.renderer.getActiveCamera();
             }
-
-            // Force to process provided state
-            this.mtime = Math.max(this.mtime, nextState.mtime) + 1;
-            nextState.mtime = this.mtime;
-            const progress = this.renderWindow.synchronize(nextState);
-
-            // Bind camera as soon as possible
-            if (progress) {
-              if (this.renderWindow.getRenderersByReference().length) {
-                [this.renderer] = this.renderWindow.getRenderersByReference();
-                this.activeCamera = this.renderer.getActiveCamera();
-              }
-              if (
-                nextState.extra &&
-                nextState.extra.camera &&
+            if (
+              nextState.extra &&
+              nextState.extra.camera &&
+              this.activeCamera
+            ) {
+              this.ctx.registerInstance(
+                nextState.extra.camera,
                 this.activeCamera
-              ) {
-                this.ctx.registerInstance(
-                  nextState.extra.camera,
-                  this.activeCamera
-                );
-              }
-            }
-
-            const success = await progress;
-            if (success && nextState.extra) {
-              if (nextState.extra.camera) {
-                this.remoteCamera = this.ctx.getInstance(
-                  nextState.extra.camera
-                );
-                if (this.remoteCamera) {
-                  this.style.setCenterOfRotation(
-                    this.remoteCamera.getFocalPoint()
-                  );
-                }
-              }
-
-              if (nextState.extra.centerOfRotation) {
-                this.style.setCenterOfRotation(
-                  nextState.extra.centerOfRotation
-                );
-              }
-
-              if (nextState.extra.resetCamera) {
-                this.resetCamera();
-              }
-            }
-
-            if (success) {
-              lastSuccessfulState = nextState;
-            }
-
-            if (success && !batchUpdates) {
-              // In shared context, rely on host render loop (e.g., MapLibre) to draw.
-              this.vueCtx.emit("viewStateChange", nextState);
-              this.vueCtx.emit("afterSceneLoaded");
+              );
             }
           }
-          // Allow host to render the coherent committed state at least once
-          // between update batches.
+
+          const success = await progress;
+          if (success && nextState.extra) {
+            if (nextState.extra.camera) {
+              this.remoteCamera = this.ctx.getInstance(
+                nextState.extra.camera
+              );
+              if (this.remoteCamera) {
+                this.style.setCenterOfRotation(
+                  this.remoteCamera.getFocalPoint()
+                );
+              }
+            }
+
+            if (nextState.extra.centerOfRotation) {
+              this.style.setCenterOfRotation(
+                nextState.extra.centerOfRotation
+              );
+            }
+
+            if (nextState.extra.resetCamera) {
+              this.resetCamera();
+            }
+          }
+
+          // Allow host to render between states
           this._sharedUpdateInProgress = false;
           this.renderWindow.getInteractor().setEnableRender(true);
 
-          // Emit events AFTER _sharedUpdateInProgress = false so camera + geometry
-          // are both ready when the first render happens (prevents jitter in
-          // MapLibre shared context where camera is applied in afterSceneLoaded)
-          if (batchUpdates) {
-            if (lastSuccessfulState) {
-              this.vueCtx.emit("viewStateChange", lastSuccessfulState);
-            }
+          if (success) {
+            this.vueCtx.emit("viewStateChange", nextState);
             this.vueCtx.emit("afterSceneLoaded");
           }
 
