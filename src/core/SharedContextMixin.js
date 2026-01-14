@@ -277,7 +277,16 @@ export function withSharedContext(BaseView) {
       if (this.selector) {
         this.selector.attach(this.openglRenderWindow, this.renderer);
       }
-        console.log('[SharedContext] Initialization complete');
+
+      // Configure renderer for shared context
+      // - preserveColorBuffer: don't clear color (MapLibre base map stays visible)
+      // - preserveDepthBuffer: DO clear depth (VTK geometry passes depth test)
+      if (this.renderer) {
+        this.renderer.setPreserveColorBuffer(true);
+        this.renderer.setPreserveDepthBuffer(false);
+      }
+
+      console.log('[SharedContext] Initialization complete');
       } catch (e) {
         console.error('[SharedContext] Initialization error:', e, e?.message, e?.stack);
         throw e;
@@ -982,6 +991,18 @@ export function withSharedContext(BaseView) {
         return false;
       }
 
+      const syncDebug =
+        typeof window !== "undefined" && window._vtkSyncDebug;
+      const startTime =
+        typeof performance !== "undefined" ? performance.now() : Date.now();
+      const initialQueueLen = this._sharedUpdateQueue.length;
+
+      if (syncDebug) {
+        console.log(
+          `[SharedContextMixin] _applyQueuedStateSynchronously START: queueLen=${initialQueueLen}`
+        );
+      }
+
       const debugEvents = getSharedDebugEvents();
       const pushDebug = debugEvents
         ? (event) => {
@@ -1003,9 +1024,19 @@ export function withSharedContext(BaseView) {
       }
 
       let lastSuccessfulState = null;
+      let stateIndex = 0;
 
       while (this._sharedUpdateQueue.length) {
         const nextState = this._sharedUpdateQueue.shift();
+
+        if (syncDebug) {
+          const frameId = nextState?.extra?.mapFrameId;
+          const hasInline = this.hasInlineData(nextState);
+          console.log(
+            `[SharedContextMixin] Applying state[${stateIndex}]: frameId=${frameId}, hasInline=${hasInline}`
+          );
+        }
+        stateIndex++;
 
         this.mtime = Math.max(this.mtime, nextState.mtime) + 1;
         nextState.mtime = this.mtime;
@@ -1067,15 +1098,39 @@ export function withSharedContext(BaseView) {
         });
       }
 
+      if (syncDebug) {
+        const elapsed = (
+          (typeof performance !== "undefined" ? performance.now() : Date.now()) -
+          startTime
+        ).toFixed(2);
+        const finalFrameId = lastSuccessfulState?.extra?.mapFrameId;
+        console.log(
+          `[SharedContextMixin] _applyQueuedStateSynchronously END: elapsed=${elapsed}ms, finalFrameId=${finalFrameId}, statesApplied=${stateIndex}`
+        );
+      }
+
       return !!lastSuccessfulState;
     }
 
     renderShared(options = {}) {
       const { skipRender = false, ...renderOptions } = options;
+      const queueLen = this._sharedUpdateQueue?.length || 0;
+
+      // Ensure all renderers are configured for shared context (state sync may create new ones)
+      if (this._sharedContext) {
+        const renderers = this.renderWindow?.getRenderersByReference?.() || [];
+        renderers.forEach((ren) => {
+          if (ren.setPreserveColorBuffer) ren.setPreserveColorBuffer(true);
+          if (ren.setPreserveDepthBuffer) ren.setPreserveDepthBuffer(false);
+        });
+      }
 
       // Sync-at-render mode (deck.gl style): apply all queued state first, then render
       if (this._syncStateAtRender) {
-        this._applyQueuedStateSynchronously();
+        const root = typeof window !== "undefined" ? window : null;
+        if (!root?._disableVtkStateSync) {
+          this._applyQueuedStateSynchronously();
+        }
         if (!skipRender) {
           trackRender("fresh", false, false, false);
           this.openglRenderWindow.renderShared(renderOptions);
