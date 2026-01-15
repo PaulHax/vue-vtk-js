@@ -239,7 +239,7 @@ export class LocalView {
     if (this.renderer) {
       this.renderer.resetCameraClippingRange();
     }
-    this.renderWindow.renderNow();
+    this.renderWindow.render();
   }
 
   setSynchronizedViewId(newId) {
@@ -725,7 +725,7 @@ export class ClientView {
 
   renderNow() {
     this.renderer.resetCameraClippingRange();
-    this.renderWindow.renderNow();
+    this.renderWindow.render();
   }
 
   resize() {
