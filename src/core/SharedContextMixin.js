@@ -41,6 +41,12 @@ export function withSharedContext(BaseView) {
       if (this.selector) {
         this.selector.attach(this.openglRenderWindow, this.renderer);
       }
+
+      if (this._renderRequestedCallback) {
+        if (this.openglRenderWindow?.setRenderCallback) {
+          this.openglRenderWindow.setRenderCallback(this._renderRequestedCallback);
+        }
+      }
       } catch (e) {
         console.error('[SharedContext] Initialization error:', e, e?.message, e?.stack);
         throw e;
@@ -102,7 +108,7 @@ export function withSharedContext(BaseView) {
 
       this._sharedUpdateRunnerActive = true;
       this._sharedUpdateInProgress = true;
-      this.renderWindow.getInteractor().setEnableRender(false);
+      this._setInteractorRenderEnabled(false);
       this.busy.reset();
       this.busy.start();
 
@@ -165,7 +171,7 @@ export function withSharedContext(BaseView) {
 
           // Allow host to render between states
           this._sharedUpdateInProgress = false;
-          this.renderWindow.getInteractor().setEnableRender(true);
+          this._setInteractorRenderEnabled(true);
 
           if (success) {
             this.vueCtx.emit("viewStateChange", nextState);
@@ -175,12 +181,12 @@ export function withSharedContext(BaseView) {
           if (this._sharedUpdateQueue.length) {
             await new Promise((resolve) => raf(resolve));
             this._sharedUpdateInProgress = true;
-            this.renderWindow.getInteractor().setEnableRender(false);
+            this._setInteractorRenderEnabled(false);
           }
         }
       } finally {
         this.busy.stop();
-        this.renderWindow.getInteractor().setEnableRender(true);
+        this._setInteractorRenderEnabled(true);
         this._sharedUpdateInProgress = false;
         this._sharedUpdateRunnerActive = false;
       }
@@ -261,7 +267,25 @@ export function withSharedContext(BaseView) {
     }
 
     onRenderRequested(callback) {
-      this.renderWindow.setExternalRenderCallback(callback);
+      this._renderRequestedCallback = callback;
+
+      if (this.openglRenderWindow?.setRenderCallback) {
+        this.openglRenderWindow.setRenderCallback(callback);
+      }
+    }
+
+    _setInteractorRenderEnabled(enabled) {
+      const interactor = this.renderWindow?.getInteractor?.();
+      if (!interactor?.setEnableRender) {
+        return;
+      }
+
+      if (this._renderRequestedCallback) {
+        interactor.setEnableRender(false);
+        return;
+      }
+
+      interactor.setEnableRender(enabled);
     }
   };
 }
