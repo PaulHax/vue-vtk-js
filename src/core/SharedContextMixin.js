@@ -1,5 +1,6 @@
 import vtkSharedRenderWindow from "@kitware/vtk.js/Rendering/OpenGL/SharedRenderWindow";
-import vtkSharedSynchronizableRenderWindow from "@kitware/vtk.js/Rendering/Misc/SharedSynchronizableRenderWindow";
+import { allArraysHaveInlineData } from "@kitware/vtk.js/Rendering/Misc/SynchronizableRenderWindow/SyncExtension/validation";
+import { updateRenderWindowSync } from "@kitware/vtk.js/Rendering/Misc/SynchronizableRenderWindow/SyncExtension/syncUpdaters";
 import vtkObjectManager from "@kitware/vtk.js/Rendering/Misc/SynchronizableRenderWindow/ObjectManager";
 
 export function withSharedContext(BaseView) {
@@ -55,7 +56,7 @@ export function withSharedContext(BaseView) {
 
     // Utility methods that use the imported functions
     hasInlineData(state) {
-      return vtkSharedSynchronizableRenderWindow.allArraysHaveInlineData(state);
+      return allArraysHaveInlineData(state);
     }
 
     _synchronizeStateSync(state, skipRender = false) {
@@ -66,7 +67,7 @@ export function withSharedContext(BaseView) {
           return false;
         }
 
-        vtkSharedSynchronizableRenderWindow.updateRenderWindowSync(
+        updateRenderWindowSync(
           this.renderWindow,
           state,
           context,
