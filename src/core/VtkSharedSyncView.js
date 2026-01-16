@@ -10,6 +10,7 @@ import {
 } from "vue";
 
 import { LocalView, enableResetCamera } from "./localview";
+import { withSharedContext } from "./SharedContextMixin";
 
 export default {
   props: {
@@ -156,8 +157,9 @@ export default {
       getArray = client.value.getRemote()?.SyncView?.getArray;
     }
 
-    // Create VTK stuff
-    const view = new LocalView(
+    // Create VTK stuff (shared context-enabled)
+    const ViewClass = withSharedContext(LocalView);
+    const view = new ViewClass(
       props.contextName,
       props.pickingModes,
       getArray,
@@ -264,6 +266,27 @@ export default {
       view.setSynchronizedViewId(idChanged);
     };
     const resize = () => view.resize();
+    const setSize = (width, height) => view.openglRenderWindow.setSize(width, height);
+    const triggerRender = () => {
+      if (view.renderer) {
+        view.renderer.resetCameraClippingRange();
+      }
+      view.renderWindow.render();
+    };
+    const getOpenGLRenderWindow = () => view.openglRenderWindow;
+    const getRenderWindow = () => view.renderWindow;
+    const renderNow = () => {
+      if (view.renderer) {
+        view.renderer.resetCameraClippingRange();
+      }
+      view.renderWindow.render();
+    };
+    const initializeForSharedContext = (canvas, gl, options) =>
+      view.initializeForSharedContext?.(canvas, gl, options);
+    const renderShared = (options) => view.renderShared?.(options);
+    const onRenderRequested = (callback) => view.onRenderRequested?.(callback);
+    const setRepaintCallback = (callback) => view.setRepaintCallback?.(callback);
+
     const { onClick, onMouseMove } = view;
     return {
       vtkContainer,
@@ -277,6 +300,15 @@ export default {
       setSynchronizedViewId,
       resize,
       captureImage,
+      setSize,
+      triggerRender,
+      getOpenGLRenderWindow,
+      getRenderWindow,
+      renderNow,
+      initializeForSharedContext,
+      renderShared,
+      onRenderRequested,
+      setRepaintCallback,
     };
   },
   template: `

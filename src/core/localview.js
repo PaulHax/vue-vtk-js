@@ -1,8 +1,6 @@
 import { debounce } from "@kitware/vtk.js/macro";
 
 import vtkSynchronizableRenderWindow from "@kitware/vtk.js/Rendering/Misc/SynchronizableRenderWindow";
-import vtkObjectManager from "@kitware/vtk.js/Rendering/Misc/SynchronizableRenderWindow/ObjectManager";
-import { withSyncCapability } from "@kitware/vtk.js/Rendering/Misc/SynchronizableRenderWindow/SyncExtension";
 import vtkOpenGLRenderWindow from "@kitware/vtk.js/Rendering/OpenGL/RenderWindow";
 import vtkRenderWindow from "@kitware/vtk.js/Rendering/Core/RenderWindow";
 import vtkRenderWindowInteractor from "@kitware/vtk.js/Rendering/Core/RenderWindowInteractor";
@@ -109,7 +107,7 @@ class BusyHandler {
 }
 
 export class LocalView {
-  constructor(ctxName, pickingModes, getArray, events, vueCtx, contextOptions = {}) {
+  constructor(ctxName, pickingModes, getArray, events, vueCtx) {
     this.vueCtx = vueCtx;
     this.pickingModes = pickingModes;
     this.container = null;
@@ -129,15 +127,8 @@ export class LocalView {
     this.renderWindow = vtkSynchronizableRenderWindow.newInstance({
       synchronizerContext: this.ctx,
     });
-    // Initialize sync capability (opt-in feature from SyncExtension)
-    this.syncCapability = withSyncCapability(
-      this.renderWindow,
-      this.ctx,
-      vtkObjectManager
-    );
     this.openglRenderWindow = vtkOpenGLRenderWindow.newInstance({
       cursor: "default",
-      ...contextOptions,
     });
     this.renderWindow.addView(this.openglRenderWindow);
     this.interactor = vtkRenderWindowInteractor.newInstance();
@@ -224,24 +215,6 @@ export class LocalView {
     this.resetCamera();
   }
 
-  setSize(width, height) {
-    this.openglRenderWindow.setSize(width, height);
-  }
-
-  triggerRender() {
-    if (this.renderer) {
-      this.renderer.resetCameraClippingRange();
-    }
-    this.renderWindow.render();
-  }
-
-  renderNow() {
-    if (this.renderer) {
-      this.renderer.resetCameraClippingRange();
-    }
-    this.renderWindow.render();
-  }
-
   setSynchronizedViewId(newId) {
     // Remove renderers from previous remote view
     const renderers = this.renderWindow.getRenderersByReference();
@@ -250,45 +223,6 @@ export class LocalView {
     }
     this.renderWindow.setSynchronizedViewId(newId);
     this.rwId = newId;
-  }
-
-  /**
-   * Synchronously apply state - for use in external render loops.
-   * Requires all arrays to have inline data (inline_arrays=True on Python side).
-   *
-   * @param {Object} state - State with inline array data
-   * @param {boolean} skipRender - If true, skip the render call
-   * @returns {boolean} - true if state was applied
-   */
-  synchronizeSync(state, skipRender = false) {
-    if (!this.syncCapability.hasInlineData(state)) {
-      console.warn(
-        "synchronizeSync: state missing inline data, falling back to async"
-      );
-      this.updateViewState(state);
-      return false;
-    }
-
-    const success = this.syncCapability.synchronizeSync(state, skipRender);
-    if (success) {
-      // Bind camera/renderer if available
-      if (this.renderWindow.getRenderersByReference().length) {
-        [this.renderer] = this.renderWindow.getRenderersByReference();
-        this.activeCamera = this.renderer.getActiveCamera();
-      }
-      if (state.extra && state.extra.camera && this.activeCamera) {
-        this.ctx.registerInstance(state.extra.camera, this.activeCamera);
-      }
-      this.vueCtx.emit("viewStateChange", state);
-    }
-    return success;
-  }
-
-  /**
-   * Check if state has all inline data required for synchronizeSync
-   */
-  hasInlineData(state) {
-    return this.syncCapability.hasInlineData(state);
   }
 
   async updateViewState(remoteState) {
@@ -570,7 +504,7 @@ export function enableResetCamera(view) {
 }
 
 export class ClientView {
-  constructor(background, pickingModes, interactorSettings, events, vueCtx, contextOptions = {}) {
+  constructor(background, pickingModes, interactorSettings, events, vueCtx) {
     this.vueCtx = vueCtx;
     this.pickingModes = pickingModes;
     this.renderWindow = vtkRenderWindow.newInstance();
@@ -582,7 +516,6 @@ export class ClientView {
 
     this.openglRenderWindow = vtkOpenGLRenderWindow.newInstance({
       cursor: "default",
-      ...contextOptions,
     });
     this.renderWindow.addView(this.openglRenderWindow);
 
@@ -712,20 +645,6 @@ export class ClientView {
 
     // Give a chance for the first layout to properly reset the camera
     this.resetCameraTimeout = setTimeout(() => this.resetCamera(), 100);
-  }
-
-  setSize(width, height) {
-    this.openglRenderWindow.setSize(width, height);
-  }
-
-  triggerRender() {
-    this.renderer.resetCameraClippingRange();
-    this.renderWindow.render();
-  }
-
-  renderNow() {
-    this.renderer.resetCameraClippingRange();
-    this.renderWindow.render();
   }
 
   resize() {
