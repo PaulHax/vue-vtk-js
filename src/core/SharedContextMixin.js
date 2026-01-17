@@ -8,65 +8,101 @@ export function withSharedContext(BaseView) {
     initializeForSharedContext(canvas, gl, options = {}) {
       try {
         this._sharedContext = true;
-      // Render gating flag: true only while we are actively applying state.
-      // (Host render loops like MapLibre can safely render between batches.)
-      this._sharedUpdateInProgress = false;
-      // Runner lock: prevents concurrent queue drainers.
-      this._sharedUpdateRunnerActive = false;
-      this._sharedUpdateQueue = [];
+        // Render gating flag: true only while we are actively applying state.
+        this._sharedUpdateInProgress = false;
+        // Runner lock: prevents concurrent queue drainers.
+        this._sharedUpdateRunnerActive = false;
+        this._sharedUpdateQueue = [];
 
-      // Cache for array content: hash -> TypedArray
-      // Used to inject cached content into states missing inline data
-      this._arrayContentCache = new Map();
+        // Cache for array content: hash -> TypedArray
+        this._arrayContentCache = new Map();
 
-      // Sync-at-render mode (deck.gl style): queue state, apply at render time
-      this._syncStateAtRender = false;
-      this._requestRepaintCallback = null;
+        // Sync-at-render mode (deck.gl style): queue state, apply at render time
+        this._syncStateAtRender = false;
+        this._requestRepaintCallback = null;
+        this._resyncCallback = null;
+        this._visibilityHandler = null;
 
-      const {
-        // Deck.gl-style sync: queue state when it arrives, apply synchronously at render.
-        // Eliminates flicker by making state application atomic with rendering.
-        // Requires host to call triggerRepaint when state arrives.
-        syncStateAtRender = false,
-        ...contextOptions
-      } = options || {};
-      this._syncStateAtRender = !!syncStateAtRender;
+        const {
+          syncStateAtRender = false,
+          onResyncRequired = null,
+          ...contextOptions
+        } = options || {};
+        this._syncStateAtRender = !!syncStateAtRender;
+        this._resyncCallback = onResyncRequired;
 
-      // Replace openglRenderWindow with SharedRenderWindow
-      this.renderWindow.removeView(this.openglRenderWindow);
-      this.openglRenderWindow.delete();
-      this.openglRenderWindow = vtkSharedRenderWindow.createFromContext(
-        canvas,
-        gl,
-        contextOptions
-      );
-      this.renderWindow.addView(this.openglRenderWindow);
-      this.interactor.setView(this.openglRenderWindow);
+        // Replace openglRenderWindow with SharedRenderWindow
+        this.renderWindow.removeView(this.openglRenderWindow);
+        this.openglRenderWindow.delete();
+        this.openglRenderWindow = vtkSharedRenderWindow.createFromContext(
+          canvas,
+          gl,
+          contextOptions
+        );
+        this.renderWindow.addView(this.openglRenderWindow);
+        this.interactor.setView(this.openglRenderWindow);
 
-      if (this.selector) {
-        this.selector.attach(this.openglRenderWindow, this.renderer);
-      }
-
-      if (this._renderRequestedCallback) {
-        if (this.openglRenderWindow?.setRenderCallback) {
-          this.openglRenderWindow.setRenderCallback(this._renderRequestedCallback);
+        if (this.selector) {
+          this.selector.attach(this.openglRenderWindow, this.renderer);
         }
-      }
 
-      // Intercept cacheArray to track cached hashes for later injection
-      const originalCacheArray = this.ctx.cacheArray?.bind(this.ctx);
-      if (originalCacheArray) {
-        this.ctx.cacheArray = (sha, array, context) => {
-          originalCacheArray(sha, array, context);
-          if (!this._arrayContentCache.has(sha)) {
-            this._arrayContentCache.set(sha, array);
+        if (this._renderRequestedCallback) {
+          if (this.openglRenderWindow?.setRenderCallback) {
+            this.openglRenderWindow.setRenderCallback(this._renderRequestedCallback);
           }
-        };
-      }
+        }
+
+        // Intercept cacheArray to track cached hashes for later injection
+        const originalCacheArray = this.ctx.cacheArray?.bind(this.ctx);
+        if (originalCacheArray) {
+          this.ctx.cacheArray = (sha, array, context) => {
+            originalCacheArray(sha, array, context);
+            if (!this._arrayContentCache.has(sha)) {
+              this._arrayContentCache.set(sha, array);
+            }
+          };
+        }
+
+        // Set up visibility change handler for browser sleep/wake detection
+        this._setupVisibilityHandler();
       } catch (e) {
         console.error('[SharedContext] Initialization error:', e, e?.message, e?.stack);
         throw e;
       }
+    }
+
+    _setupVisibilityHandler() {
+      if (typeof document === 'undefined') return;
+
+      this._visibilityHandler = () => {
+        if (document.visibilityState === 'visible') {
+          this._onBecameVisible();
+        }
+      };
+      document.addEventListener('visibilitychange', this._visibilityHandler);
+    }
+
+    _cleanupVisibilityHandler() {
+      if (this._visibilityHandler && typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', this._visibilityHandler);
+        this._visibilityHandler = null;
+      }
+    }
+
+    _onBecameVisible() {
+      // Clear queued state that may have incomplete data from before sleep
+      if (this._sharedUpdateQueue?.length) {
+        this._sharedUpdateQueue.length = 0;
+      }
+
+      // Request server to resync (send full arrays on next update)
+      if (this._resyncCallback) {
+        this._resyncCallback();
+      }
+    }
+
+    setResyncCallback(callback) {
+      this._resyncCallback = callback;
     }
 
     // Utility methods that use the imported functions
@@ -345,6 +381,13 @@ export function withSharedContext(BaseView) {
       }
 
       interactor.setEnableRender(enabled);
+    }
+
+    beforeDelete() {
+      this._cleanupVisibilityHandler();
+      if (super.beforeDelete) {
+        super.beforeDelete();
+      }
     }
   };
 }

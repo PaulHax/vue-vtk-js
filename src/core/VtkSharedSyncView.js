@@ -286,6 +286,7 @@ export default {
     const renderShared = (options) => view.renderShared?.(options);
     const onRenderRequested = (callback) => view.onRenderRequested?.(callback);
     const setRepaintCallback = (callback) => view.setRepaintCallback?.(callback);
+    const setResyncCallback = (callback) => view.setResyncCallback?.(callback);
 
     const { onClick, onMouseMove } = view;
     return {
@@ -309,6 +310,7 @@ export default {
       renderShared,
       onRenderRequested,
       setRepaintCallback,
+      setResyncCallback,
     };
   },
   template: `
