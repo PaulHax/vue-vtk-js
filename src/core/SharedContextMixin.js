@@ -15,6 +15,10 @@ export function withSharedContext(BaseView) {
       this._sharedUpdateRunnerActive = false;
       this._sharedUpdateQueue = [];
 
+      // Cache for array content: hash -> TypedArray
+      // Used to inject cached content into states missing inline data
+      this._arrayContentCache = new Map();
+
       // Sync-at-render mode (deck.gl style): queue state, apply at render time
       this._syncStateAtRender = false;
       this._requestRepaintCallback = null;
@@ -48,6 +52,17 @@ export function withSharedContext(BaseView) {
           this.openglRenderWindow.setRenderCallback(this._renderRequestedCallback);
         }
       }
+
+      // Intercept cacheArray to track cached hashes for later injection
+      const originalCacheArray = this.ctx.cacheArray?.bind(this.ctx);
+      if (originalCacheArray) {
+        this.ctx.cacheArray = (sha, array, context) => {
+          originalCacheArray(sha, array, context);
+          if (!this._arrayContentCache.has(sha)) {
+            this._arrayContentCache.set(sha, array);
+          }
+        };
+      }
       } catch (e) {
         console.error('[SharedContext] Initialization error:', e, e?.message, e?.stack);
         throw e;
@@ -57,6 +72,46 @@ export function withSharedContext(BaseView) {
     // Utility methods that use the imported functions
     hasInlineData(state) {
       return allArraysHaveInlineData(state);
+    }
+
+    _typedArrayToBase64(typedArray) {
+      const bytes = new Uint8Array(typedArray.buffer, typedArray.byteOffset, typedArray.byteLength);
+      let binary = '';
+      for (let i = 0; i < bytes.byteLength; i++) {
+        binary += String.fromCharCode(bytes[i]);
+      }
+      return btoa(binary);
+    }
+
+    _injectCachedContent(state) {
+      if (!this._arrayContentCache?.size) return;
+
+      const walkObj = (obj) => {
+        if (!obj || typeof obj !== 'object') return;
+
+        // Check if this is an array descriptor missing content
+        if (obj.hash && obj.dataType && !obj.content) {
+          const cachedArray = this._arrayContentCache.get(obj.hash);
+          if (cachedArray) {
+            obj.content = this._typedArrayToBase64(cachedArray);
+          }
+        }
+
+        // Recurse into nested structures
+        if (obj.properties) {
+          Object.values(obj.properties).forEach(walkObj);
+        }
+        if (obj.dependencies) {
+          obj.dependencies.forEach(walkObj);
+        }
+        if (obj.arrays) {
+          Object.values(obj.arrays).forEach(walkObj);
+        }
+        if (Array.isArray(obj)) {
+          obj.forEach(walkObj);
+        }
+      };
+      walkObj(state);
     }
 
     _synchronizeStateSync(state, skipRender = false) {
@@ -204,6 +259,9 @@ export function withSharedContext(BaseView) {
 
       while (this._sharedUpdateQueue.length) {
         const nextState = this._sharedUpdateQueue.shift();
+
+        // Inject cached array content for arrays missing inline data
+        this._injectCachedContent(nextState);
 
         this.mtime = Math.max(this.mtime, nextState.mtime) + 1;
         nextState.mtime = this.mtime;
