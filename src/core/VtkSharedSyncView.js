@@ -80,10 +80,6 @@ export default {
       type: Array,
       default: () => [],
     },
-    resyncTrigger: {
-      type: String,
-      default: "vtk_request_resync",
-    },
   },
   emits: [
     "resetCamera",
@@ -217,10 +213,11 @@ export default {
 
     let wsSubscription = null;
 
-    // Helper to call resync trigger
+    // Helper to request resync via RPC
     const requestResync = () => {
-      if (props.resyncTrigger && trame?.trigger) {
-        trame.trigger(props.resyncTrigger);
+      const session = client.value?.getConnection()?.getSession();
+      if (session && view.rwId) {
+        session.call("viewport.geometry.view.resync", [view.rwId]);
       }
     };
 
@@ -230,17 +227,16 @@ export default {
       resizeObserver.observe(container);
       document.addEventListener("keyup", onKeyUp);
 
-      // Set view ID from viewState prop if available (for backwards compat)
+      // Set view ID from viewState prop if available
       if (props.viewState?.id) {
         view.rwId = props.viewState.id;
       }
 
-      // Subscribe to delta updates first
+      // Subscribe to delta updates (server sends initial state on connect)
       wsSubscription = client.value
         .getConnection()
         .getSession()
         .subscribe("trame.vtk.delta", ([deltaState]) => {
-          // Accept state if no rwId set yet, or if it matches
           if (!view.rwId || deltaState.id === view.rwId) {
             if (!view.rwId) {
               view.rwId = deltaState.id;
@@ -251,9 +247,6 @@ export default {
 
       // Wire up visibility handler to request resync on wake
       view.setResyncCallback?.(requestResync);
-
-      // Request initial state from server via resync trigger
-      requestResync();
     });
 
     onBeforeUnmount(() => {
