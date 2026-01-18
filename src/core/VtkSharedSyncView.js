@@ -80,6 +80,10 @@ export default {
       type: Array,
       default: () => [],
     },
+    resyncTrigger: {
+      type: String,
+      default: "vtk_request_resync",
+    },
   },
   emits: [
     "resetCamera",
@@ -212,25 +216,44 @@ export default {
     );
 
     let wsSubscription = null;
+
+    // Helper to call resync trigger
+    const requestResync = () => {
+      if (props.resyncTrigger && trame?.trigger) {
+        trame.trigger(props.resyncTrigger);
+      }
+    };
+
     onMounted(() => {
       const container = vtkContainer.value;
       view.setContainer(container);
       resizeObserver.observe(container);
       document.addEventListener("keyup", onKeyUp);
 
-      if (props.viewState) {
+      // Set view ID from viewState prop if available (for backwards compat)
+      if (props.viewState?.id) {
         view.rwId = props.viewState.id;
-        view.updateViewState(props.viewState);
       }
 
+      // Subscribe to delta updates first
       wsSubscription = client.value
         .getConnection()
         .getSession()
         .subscribe("trame.vtk.delta", ([deltaState]) => {
-          if (deltaState.id === view.rwId) {
+          // Accept state if no rwId set yet, or if it matches
+          if (!view.rwId || deltaState.id === view.rwId) {
+            if (!view.rwId) {
+              view.rwId = deltaState.id;
+            }
             view.updateViewState(deltaState);
           }
         });
+
+      // Wire up visibility handler to request resync on wake
+      view.setResyncCallback?.(requestResync);
+
+      // Request initial state from server via resync trigger
+      requestResync();
     });
 
     onBeforeUnmount(() => {
@@ -311,6 +334,7 @@ export default {
       onRenderRequested,
       setRepaintCallback,
       setResyncCallback,
+      requestResync,
     };
   },
   template: `
