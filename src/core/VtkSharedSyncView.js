@@ -283,20 +283,8 @@ export default {
     };
     const resize = () => view.resize();
     const setSize = (width, height) => view.openglRenderWindow.setSize(width, height);
-    const triggerRender = () => {
-      if (view.renderer) {
-        view.renderer.resetCameraClippingRange();
-      }
-      view.renderWindow.render();
-    };
     const getOpenGLRenderWindow = () => view.openglRenderWindow;
     const getRenderWindow = () => view.renderWindow;
-    const renderNow = () => {
-      if (view.renderer) {
-        view.renderer.resetCameraClippingRange();
-      }
-      view.renderWindow.render();
-    };
     const initializeForSharedContext = (canvas, gl, options) =>
       view.initializeForSharedContext?.(canvas, gl, options);
     const renderShared = (options) => view.renderShared?.(options);
@@ -318,10 +306,8 @@ export default {
       resize,
       captureImage,
       setSize,
-      triggerRender,
       getOpenGLRenderWindow,
       getRenderWindow,
-      renderNow,
       initializeForSharedContext,
       renderShared,
       onRenderRequested,
