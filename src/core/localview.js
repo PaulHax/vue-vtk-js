@@ -33,8 +33,11 @@ export const CAMERA_PROPS = [
   "parallelProjection",
   "parallelScale",
   "position",
+  "projectionMatrix",
   "viewAngle",
   "viewUp",
+  "windowCenter",
+  "clippingRange",
 ];
 
 export const manipulatorFactory = {
