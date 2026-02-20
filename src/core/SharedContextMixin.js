@@ -12,7 +12,7 @@ export function withSharedContext(BaseView) {
         this._sharedUpdateInProgress = false;
         // Runner lock: prevents concurrent queue drainers.
         this._sharedUpdateRunnerActive = false;
-        this._sharedUpdateQueue = [];
+        this._sharedUpdateQueue = this._sharedUpdateQueue || [];
 
         // Cache for array content: hash -> TypedArray
         this._arrayContentCache = new Map();
@@ -186,7 +186,10 @@ export function withSharedContext(BaseView) {
       }
       this._sharedUpdateQueue.push(remoteState);
 
-      // Sync-at-render mode (deck.gl style): just queue state, apply at render time
+      if (!this._sharedContext) {
+        return;
+      }
+
       if (this._syncStateAtRender) {
         if (this._requestRepaintCallback) {
           this._requestRepaintCallback();
@@ -296,15 +299,15 @@ export function withSharedContext(BaseView) {
       while (this._sharedUpdateQueue.length) {
         const nextState = this._sharedUpdateQueue.shift();
 
-        // Inject cached array content for arrays missing inline data
         this._injectCachedContent(nextState);
 
-        this.mtime = Math.max(this.mtime, nextState.mtime) + 1;
+        this.mtime = Math.max(this.mtime, nextState.mtime || 0) + 1;
         nextState.mtime = this.mtime;
 
-        // Use synchronous path if inline data is available
+        const hasInline = this.hasInlineData(nextState);
+
         let success = false;
-        if (this.hasInlineData(nextState)) {
+        if (hasInline) {
           success = this._synchronizeStateSync(nextState, true);
         } else {
           const progress = this.renderWindow.synchronize(nextState);
@@ -339,6 +342,20 @@ export function withSharedContext(BaseView) {
             }
             if (nextState.extra.resetCamera) {
               this.resetCamera();
+            }
+          }
+        }
+      }
+
+      // If no renderers after processing all states, manually add them from
+      // dependencies. The server sends addRenderer in `calls`, but they can be
+      // lost when the first publish happens before the client subscribes.
+      if (!this.renderWindow.getRenderersByReference().length && lastSuccessfulState?.dependencies) {
+        for (const dep of lastSuccessfulState.dependencies) {
+          if (dep.type?.includes('Renderer')) {
+            const inst = this.ctx.getInstance(dep.id);
+            if (inst && typeof this.renderWindow.addRenderer === 'function') {
+              this.renderWindow.addRenderer(inst);
             }
           }
         }
