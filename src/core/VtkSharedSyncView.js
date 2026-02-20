@@ -203,10 +203,15 @@ export default {
     );
     watch(
       () => props.viewState,
-      ({ id }) => {
+      (newVal) => {
+        if (!newVal) return;
+        const { id } = newVal;
         if (id === idChanged) {
           idChanged = false;
-          view.updateViewState(props.viewState);
+          view.updateViewState(newVal);
+        } else if (!view.rwId) {
+          view.rwId = id;
+          view.updateViewState(newVal);
         }
       }
     );
@@ -227,9 +232,10 @@ export default {
       resizeObserver.observe(container);
       document.addEventListener("keyup", onKeyUp);
 
-      // Set view ID from viewState prop if available
-      if (props.viewState?.id) {
+      // Process initial viewState prop if available
+      if (props.viewState) {
         view.rwId = props.viewState.id;
+        view.updateViewState(props.viewState);
       }
 
       // Subscribe to delta updates (server sends initial state on connect)
@@ -247,6 +253,16 @@ export default {
 
       // Wire up visibility handler to request resync on wake
       view.setResyncCallback?.(requestResync);
+
+      // Signal ready so the host (e.g. MapLibre) can initialize the shared
+      // WebGL context.  State is queued until initializeForSharedContext runs.
+      emit("onReady", true);
+
+      // Request initial state from server now that we're subscribed
+      const session = client.value?.getConnection()?.getSession();
+      if (session) {
+        session.call("viewport.geometry.view.resync", [view.rwId || 0]);
+      }
     });
 
     onBeforeUnmount(() => {
