@@ -347,20 +347,6 @@ export function withSharedContext(BaseView) {
         }
       }
 
-      // If no renderers after processing all states, manually add them from
-      // dependencies. The server sends addRenderer in `calls`, but they can be
-      // lost when the first publish happens before the client subscribes.
-      if (!this.renderWindow.getRenderersByReference().length && lastSuccessfulState?.dependencies) {
-        for (const dep of lastSuccessfulState.dependencies) {
-          if (dep.type?.includes('Renderer')) {
-            const inst = this.ctx.getInstance(dep.id);
-            if (inst && typeof this.renderWindow.addRenderer === 'function') {
-              this.renderWindow.addRenderer(inst);
-            }
-          }
-        }
-      }
-
       if (lastSuccessfulState) {
         this.vueCtx.emit("viewStateChange", lastSuccessfulState);
       }
