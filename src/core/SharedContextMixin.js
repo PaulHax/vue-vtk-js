@@ -192,7 +192,7 @@ export function withSharedContext(BaseView) {
 
       if (this._syncStateAtRender) {
         if (this._requestRepaintCallback) {
-          this._requestRepaintCallback();
+          this._requestRepaintCallback(remoteState);
         }
         return;
       }
