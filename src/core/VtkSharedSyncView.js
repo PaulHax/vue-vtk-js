@@ -218,51 +218,55 @@ export default {
 
     let wsSubscription = null;
 
-    // Helper to request resync via RPC
-    const requestResync = () => {
-      const session = client.value?.getConnection()?.getSession();
-      if (session && view.rwId) {
-        session.call("viewport.geometry.view.resync", [view.rwId]);
+    const handleDelta = ([deltaState]) => {
+      if (deltaState.id === view.rwId) {
+        view.updateViewState(deltaState);
       }
     };
 
-    onMounted(() => {
+    const ensureSubscription = () => {
+      if (wsSubscription) return true;
+      const s = client.value?.getConnection()?.getSession();
+      if (!s) return false;
+      wsSubscription = s.subscribe("trame.vtk.delta", handleDelta);
+      return true;
+    };
+
+    const requestResync = async () => {
+      const s = client.value?.getConnection()?.getSession();
+      if (!s) return;
+      const state = await s.call("viewport.geometry.view.resync", [view.rwId || 0]);
+      if (state && !state.error) {
+        view.rwId = state.id;
+        view.updateViewState(state);
+      }
+    };
+
+    const connectAndSync = async () => {
+      ensureSubscription();
+      await requestResync();
+    };
+
+    onMounted(async () => {
       const container = vtkContainer.value;
       view.setContainer(container);
       resizeObserver.observe(container);
       document.addEventListener("keyup", onKeyUp);
 
-      // Process initial viewState prop if available
       if (props.viewState) {
         view.rwId = props.viewState.id;
         view.updateViewState(props.viewState);
       }
 
-      // Subscribe to delta updates (server sends initial state on connect)
-      wsSubscription = client.value
-        .getConnection()
-        .getSession()
-        .subscribe("trame.vtk.delta", ([deltaState]) => {
-          if (!view.rwId || deltaState.id === view.rwId) {
-            if (!view.rwId) {
-              view.rwId = deltaState.id;
-            }
-            view.updateViewState(deltaState);
-          }
-        });
-
-      // Wire up visibility handler to request resync on wake
       view.setResyncCallback?.(requestResync);
 
-      // Signal ready so the host (e.g. MapLibre) can initialize the shared
-      // WebGL context.  State is queued until initializeForSharedContext runs.
+      // Signal ready FIRST so host (e.g. MapLibre) can initialize shared
+      // context even if WebSocket isn't connected yet.
       emit("onReady", true);
 
-      // Request initial state from server now that we're subscribed
-      const session = client.value?.getConnection()?.getSession();
-      if (session) {
-        session.call("viewport.geometry.view.resync", [view.rwId || 0]);
-      }
+      // Try to subscribe and fetch initial state (safe if WS not ready yet)
+      ensureSubscription();
+      await requestResync();
     });
 
     onBeforeUnmount(() => {
@@ -330,6 +334,7 @@ export default {
       setRepaintCallback,
       setResyncCallback,
       requestResync,
+      connectAndSync,
     };
   },
   template: `
