@@ -235,6 +235,7 @@ export default {
     const requestResync = async () => {
       const s = client.value?.getConnection()?.getSession();
       if (!s) return;
+      // 0 triggers server's "return first registered view" fallback, used before the client knows its render window ID
       const state = await s.call("viewport.geometry.view.resync", [view.rwId || 0]);
       if (state && !state.error) {
         view.rwId = state.id;
