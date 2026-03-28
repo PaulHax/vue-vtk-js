@@ -11,6 +11,7 @@ import VtkPolydata from "./core/VtkPolydata";
 import VtkReader from "./core/VtkReader";
 import VtkRemoteLocalView from "./core/VtkRemoteLocalView";
 import VtkRemoteView from "./core/VtkRemoteView";
+import VtkSharedSyncView from "./core/VtkSharedSyncView";
 import VtkSyncView from "./core/VtkSyncView";
 import VtkView from "./core/VtkView";
 import VtkWebXRHelper from "./core/VtkWebXRHelper";
@@ -29,6 +30,7 @@ export default {
   VtkReader,
   VtkRemoteLocalView,
   VtkRemoteView,
+  VtkSharedSyncView,
   VtkSyncView,
   VtkLocalView: VtkSyncView,
   VtkView,
